@@ -259,7 +259,7 @@ class WeightNet(nn.Module):
         weights = localized_xyz
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            weights =  F.relu(bn(conv(weights)))
+            weights = F.relu(bn(conv(weights)))
 
         return weights
 
@@ -304,7 +304,7 @@ class PointConvSetAbstraction(nn.Module):
         new_points = new_points.permute(0, 3, 2, 1) # [B, C+D, nsample,npoint]
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            new_points =  F.relu(bn(conv(new_points)))
+            new_points = F.relu(bn(conv(new_points)))
 
         grouped_xyz = grouped_xyz_norm.permute(0, 3, 2, 1)
         weights = self.weightnet(grouped_xyz)
