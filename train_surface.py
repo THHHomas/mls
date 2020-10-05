@@ -12,7 +12,9 @@ from pathlib import Path
 from tqdm import tqdm
 from utils.utils import test, save_checkpoint, construct_planes
 from model.pointconv import PointConvDensityClsSsg as PointConvClsSsg
-from resampling import MLS
+from learning_based_surface.surfacenet import SurfaceNet
+from utils.mls import MLS, farthest_point_sample
+import h5py
 
 def parse_args():
     '''PARAMETERS'''
@@ -28,10 +30,75 @@ def parse_args():
     parser.add_argument('--model_name', default='pointconv', help='model name')
     return parser.parse_args()
 
+def construct_MLS(points, path, point_nums, phase='train'):
+    data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
+
+    points = torch.from_numpy(points)
+    point_nums = [points.shape[1]]+point_nums
+    for i, point_num in enumerate(point_nums):
+        if i == len(point_nums)-1:
+            break
+        local_coordinates = []
+        neighbor_lists = []
+        data_idx_lists = []
+        neighbor_grp = data_file.create_group("neighbor"+str(i))
+        coordinate_grp = data_file.create_group("coordinate"+str(i))
+        idx_grp = data_file.create_group("idx"+str(i))
+        new_points =[]
+        for idx in range(points.shape[0]):
+            data = points[idx, :, :]
+            data_idx = farthest_point_sample(data.unsqueeze(0), point_num).squeeze().long()
+            data = data[data_idx]
+            new_points.append(data)
+            filtered_neighbor_list, local_coordinate = MLS(data)
+            local_coordinates.append(local_coordinate)
+            data_idx_lists.append(data_idx)
+            neighbor_lists.append(filtered_neighbor_list)
+            if idx > 10:
+                break
+        points = torch.stack(new_points)
+        neighbor_lists = torch.stack(neighbor_lists)
+        local_coordinates = torch.stack(local_coordinates)
+        data_idx_lists = torch.stack(data_idx_lists)
+        neighbor_grp.create_dataset('neighbor_lists', data=neighbor_lists)
+        coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
+        idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
+
+
+def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
+    data_file = h5py.File(os.path.join(auxiliarypath, phase + '.h5'), 'r')
+    local_coordinates = []
+    neighbor_lists = []
+    data_idx_lists = []
+    point_nums = [2048] + point_nums
+    for i, point_num in enumerate(point_nums):
+        if i == len(point_nums) - 1:
+            break
+
+        neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
+        coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
+        idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
+
+        neighbor_lists.append(neighbor_grp)
+        local_coordinates.append(coordinate_grp)
+        data_idx_lists.append(idx_grp)
+    neighbor_lists = np.concatenate(neighbor_lists, 1) #([B, N0, content], [B, N1, content], [B, N1, content])
+    local_coordinates = np.concatenate(local_coordinates, 1)
+    data_idx_lists = np.concatenate(data_idx_lists, 1)
+
+    return torch.from_numpy(local_coordinates), torch.from_numpy(neighbor_lists), torch.from_numpy(data_idx_lists)
+
+
 def main(args):
     '''HYPER PARAMETER'''
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     datapath = './data/ModelNet/'
+    auxiliarypath = os.path.join(datapath, 'auxiliary')
+    if ~os.path.exists(auxiliarypath):
+        try:
+            os.mkdir(auxiliarypath)
+        except:
+            pass
 
     '''CREATE DIR'''
     experiment_dir = Path('./experiment/')
@@ -56,19 +123,9 @@ def main(args):
     logger.info('PARAMETER ...')
     logger.info(args)
 
-    '''DATA LOADING'''
-    logger.info('Load dataset ...')
-    train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
-    logger.info("The number of training data is: %d",train_data.shape[0])
-    logger.info("The number of test data is: %d", test_data.shape[0])
-    trainDataset = ModelNetDataLoader(train_data, train_label)
-    testDataset = ModelNetDataLoader(test_data, test_label)
-    trainDataLoader = torch.utils.data.DataLoader(trainDataset, batch_size=args.batchsize, shuffle=True)
-    testDataLoader = torch.utils.data.DataLoader(testDataset, batch_size=args.batchsize, shuffle=False)
-
     '''MODEL LOADING'''
     num_class = 40
-    classifier = PointConvClsSsg(num_class).cuda()
+    classifier = SurfaceNet(num_class).cuda()
     if args.pretrain is not None:
         print('Use pretrain model...')
         logger.info('Use pretrain model')
@@ -78,7 +135,6 @@ def main(args):
     else:
         print('No existing model, starting training from scratch...')
         start_epoch = 0
-
 
     if args.optimizer == 'SGD':
         optimizer = torch.optim.SGD(classifier.parameters(), lr=0.01, momentum=0.9)
@@ -96,6 +152,23 @@ def main(args):
     best_tst_accuracy = 0.0
     blue = lambda x: '\033[94m' + x + '\033[0m'
 
+    '''DATA LOADING'''
+    logger.info('Load dataset ...')
+    train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
+    '''logger.info('construct_MLS for train data...')
+    construct_MLS(train_data, auxiliarypath, classifier.point_num)
+    logger.info('construct_MLS for test data...')
+    construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')
+    exit(0)'''
+    train_local_coordinates, train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
+    logger.info("The number of training data is: %d",train_data.shape[0])
+    logger.info("The number of test data is: %d", test_data.shape[0])
+    trainDataset = ModelNetDataLoader(train_data, train_label, train_local_coordinates, train_neighbor_lists, train_data_idx_lists)
+    test_local_coordinates, test_neighbor_lists, test_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num, phase='test')
+    testDataset = ModelNetDataLoader(test_data, test_label, test_local_coordinates, test_neighbor_lists, test_data_idx_lists)
+    trainDataLoader = torch.utils.data.DataLoader(trainDataset, batch_size=args.batchsize, shuffle=True)
+    testDataLoader = torch.utils.data.DataLoader(testDataset, batch_size=args.batchsize, shuffle=False)
+
     '''TRANING'''
     logger.info('Start training...')
     first_time = True
@@ -105,29 +178,19 @@ def main(args):
 
         scheduler.step()
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
-            points, target = data
+            points, target, local_coordinates, neighbor_lists, data_idx_lists = data
             target = target[:, 0]
             points = points.transpose(2, 1)
             points, target = points.cuda(), target.cuda()
-            #construct_planes(points[0])
-            if first_time:
-                print("first time...")
-                res = points[0].cpu().numpy()
-                np.save("sample", res)
-                print(target[0])
-                local_planes = MLS()
-                first_time = False
-                exit(0)
 
             optimizer.zero_grad()
             classifier = classifier.train()
-            pred = classifier(points)
+            pred = classifier(points, local_coordinates, neighbor_lists, data_idx_lists)
             loss = F.nll_loss(pred, target.long())
 
             loss.backward()
             optimizer.step()
             global_step += 1
-
         train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
         acc = test(classifier, testDataLoader)
 

@@ -34,21 +34,27 @@ class WeightNet(nn.Module):
 
 
 class SurfaceConv(nn.Module):
-    def __init__(self, points, mlp):
+    def __init__(self, npoint, in_channel,  mlp):
         super(SurfaceConv, self).__init__()
 
         self.linear = nn.Linear(16 * mlp[-1], mlp[-1])
         self.bn_linear = nn.BatchNorm1d(mlp[-1])
+        self.in_channel = in_channel
+        self.npoint = npoint
 
-    def forward(self, xyz, points):
-        if self.filtered_neighbor is None:
-            filtered_neighbor_list, coordinate = MLS(xyz)
-            self.filtered_neighbor = filtered_neighbor_list
-            self.coordinate = coordinate
-        weights = self.weightnet(self.coordinate)
-        new_points = torch.matmul(input=points.permute(0, 3, 1, 2), other=weights.permute(0, 3, 2, 1)).view(B,
+    def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
+        """needs more modification"""
+        B, N, C = points.shape
+
+        # fps sampling
+
+        weights = self.weightnet(self.local_coordinates)
+        data = points[neighbor_lists]
+        new_points = torch.matmul(input=data, other=weights.permute(0, 3, 2, 1)).view(B,
                                                                                                                 self.npoint,
-                                                                                                                -1)
+                                                                                                                    -1)
+        new_points = new_points[data_idx]
+
         new_points = self.linear(new_points)
         new_points = self.bn_linear(new_points.permute(0, 2, 1))
         new_points = F.relu(new_points)

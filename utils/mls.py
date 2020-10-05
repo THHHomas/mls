@@ -13,20 +13,10 @@ def inverse_distance(vector, h=0.1):
 
 
 def MLS(points):
-    # points2pcd(points, "origin")
-    #x, y = np.mgrid[0:5, 2:8]
-    #tree = kdtree(list(zip(x.ravel(), y.ravel())))
-    #pts = np.array([[0, 0], [2.1, 2.9]])
-    #res = tree.query(pts)
-
-    #tree = kdtree(points)
-    #neighbor_lists = tree.query_ball_tree(tree, r=0.1)
-
-    #print("kdtree ball query time is :", time()-start_time)
 
     start_time = time()
     points = points.unsqueeze(0)
-    neighbor_lists = knn_point(25, points, points).squeeze()
+    neighbor_lists = knn_point(15, points, points).squeeze()
     points = points.squeeze()
     n_list = []
     error_rate_list = []
@@ -94,7 +84,35 @@ def MLS(points):
     local_coordinate = torch.cat(local_coordinate)
     # points2pcd(projected_points, "projected")
     # print("plane time is: ", time()-start_time)
-    return filtered_neighbor_list, local_coordinate
+    return neighbor_lists, local_coordinate
+
+
+def farthest_point_sample(xyz, npoint):
+    """
+    Input:
+        xyz: pointcloud data, [B, N, C]
+        npoint: number of samples
+    Return:
+        centroids: sampled pointcloud index, [B, npoint]
+    """
+    #import ipdb; ipdb.set_trace()
+    device = xyz.device
+    B, N, C = xyz.shape
+    if N == npoint:
+        centroids = torch.range(0, N-1).unsqueeze(0).repeat(B, 1)
+        return centroids
+    centroids = torch.zeros(B, npoint, dtype=torch.long).to(device)
+    distance = torch.ones(B, N).to(device) * 1e10
+    farthest = torch.randint(0, N, (B,), dtype=torch.long).to(device)
+    batch_indices = torch.arange(B, dtype=torch.long).to(device)
+    for i in range(npoint):
+        centroids[:, i] = farthest
+        centroid = xyz[batch_indices, farthest, :].view(B, 1, 3)
+        dist = torch.sum((xyz - centroid) ** 2, -1)
+        mask = dist < distance
+        distance[mask] = dist[mask]
+        farthest = torch.max(distance, -1)[1]
+    return centroids
 
 
 if __name__ == "__main__":

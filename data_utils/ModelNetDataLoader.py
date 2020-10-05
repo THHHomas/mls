@@ -4,6 +4,7 @@ import h5py
 from torch.utils.data import Dataset
 warnings.filterwarnings('ignore')
 
+
 def load_h5(h5_filename):
     f = h5py.File(h5_filename)
     data = f['data'][:]
@@ -11,7 +12,8 @@ def load_h5(h5_filename):
     seg = []
     return (data, label, seg)
 
-def load_data(dir,classification = False):
+
+def load_data(dir, classification=False):
     data_train0, label_train0,Seglabel_train0  = load_h5(dir + 'ply_data_train0.h5')
     data_train1, label_train1,Seglabel_train1 = load_h5(dir + 'ply_data_train1.h5')
     data_train2, label_train2,Seglabel_train2 = load_h5(dir + 'ply_data_train2.h5')
@@ -27,15 +29,18 @@ def load_data(dir,classification = False):
     test_Seglabel = np.concatenate([Seglabel_test0,Seglabel_test1])
 
     if classification:
-        return train_data, train_label, test_data, test_label
+        return train_data[0:12], train_label[0:12], test_data[0:12], test_label[0:12]
     else:
         return train_data, train_Seglabel, test_data, test_Seglabel
 
 class ModelNetDataLoader(Dataset):
-    def __init__(self, data, labels, rotation = None):
+    def __init__(self, data, labels, local_coordinates, neighbor_lists, data_idx_lists, rotation = None):
         self.data = data
         self.labels = labels
         self.rotation = rotation
+        self.local_coordinates = local_coordinates
+        self.neighbor_lists = neighbor_lists
+        self.data_idx_lists = data_idx_lists
 
     def __len__(self):
         return len(self.data)
@@ -61,7 +66,6 @@ class ModelNetDataLoader(Dataset):
             pointcloud = self.data[index]
             angle = np.random.randint(self.rotation[0], self.rotation[1]) * np.pi / 180
             pointcloud = self.rotate_point_cloud_by_angle(pointcloud, angle)
-
             return pointcloud, self.labels[index]
         else:
-            return self.data[index], self.labels[index]
+            return self.data[index], self.labels[index], self.local_coordinates[index], self.neighbor_lists[index], self.data_idx_lists[index]
