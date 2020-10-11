@@ -80,13 +80,23 @@ def save_checkpoint(epoch, train_accuracy, test_accuracy, model, optimizer, path
 def test(model, loader):
     mean_correct = []
     for j, data in enumerate(loader, 0):
-        points, target = data
-        target = target[:, 0]
-        points = points.transpose(2, 1)
-        points, target = points.cuda(), target.cuda()
-        classifier = model.eval()
-        with torch.no_grad():
-            pred = classifier(points)
+        if len(data)==5:
+            points, target, local_coordinates, neighbor_lists, data_idx_lists = data
+            target = target[:, 0]
+            points, target, local_coordinates, neighbor_lists, data_idx_lists = \
+                points.cuda(), target.cuda(), local_coordinates.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
+            classifier = model.eval()
+            with torch.no_grad():
+                pred = classifier(points, local_coordinates, neighbor_lists, data_idx_lists)
+        elif len(data)==2:
+            points, target = data
+            points = points.permute(0, 2, 1)
+            target = target[:, 0]
+            points, target,  = points.cuda(), target.cuda()
+            classifier = model.eval()
+            with torch.no_grad():
+                pred = classifier(points)
+
         pred_choice = pred.data.max(1)[1]
         correct = pred_choice.eq(target.long().data).cpu().sum()
         mean_correct.append(correct.item()/float(points.size()[0]))

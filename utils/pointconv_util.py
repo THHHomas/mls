@@ -161,7 +161,7 @@ def sample_and_group_all(xyz, points, density_scale = None):
     new_xyz = xyz.mean(dim = 1, keepdim = True)
     grouped_xyz = xyz.view(B, 1, N, C) - new_xyz.view(B, 1, 1, C)
     if points is not None:
-        new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)
+        new_points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1) # [B, 1, npoint, C+D]
     else:
         new_points = grouped_xyz
     if density_scale is None:
@@ -236,7 +236,7 @@ class DensityNet(nn.Module):
 
 class WeightNet(nn.Module):
 
-    def __init__(self, in_channel, out_channel, hidden_unit = [8, 8]):
+    def __init__(self, in_channel, out_channel, hidden_unit=[8, 8]):
         super(WeightNet, self).__init__()
 
         self.mlp_convs = nn.ModuleList()
@@ -259,9 +259,10 @@ class WeightNet(nn.Module):
         weights = localized_xyz
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            weights = F.relu(bn(conv(weights)))
+            weights = F.relu(bn(conv(weights.contiguous())))
 
         return weights
+
 
 class PointConvSetAbstraction(nn.Module):
     def __init__(self, npoint, nsample, in_channel, mlp, group_all):
@@ -277,6 +278,7 @@ class PointConvSetAbstraction(nn.Module):
             last_channel = out_channel
 
         self.weightnet = WeightNet(3, 16)
+        # self.weight = torch.nn.Parameter(torch.tensor(mlp[-2], 25, mlp[-1]))
         self.linear = nn.Linear(16 * mlp[-1], mlp[-1])
         self.bn_linear = nn.BatchNorm1d(mlp[-1])
         self.group_all = group_all
@@ -361,15 +363,16 @@ class PointConvDensitySetAbstraction(nn.Module):
             new_xyz, new_points, grouped_xyz_norm, _, grouped_density = sample_and_group(self.npoint, self.nsample, xyz, points, density_scale.view(B, N, 1))
         # new_xyz: sampled points position data, [B, npoint, C]
         # new_points: sampled points data, [B, npoint, nsample, C+D]
-        new_points = new_points.permute(0, 3, 2, 1) # [B, C+D, nsample,npoint]
+        new_points = new_points.permute(0, 3, 2, 1)  # [B, C+D, nsample,npoint]
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            new_points =  F.relu(bn(conv(new_points)))
+            new_points =  F.relu(bn(conv(new_points.contiguous())))
 
         grouped_xyz = grouped_xyz_norm.permute(0, 3, 2, 1)
-        weights = self.weightnet(grouped_xyz)
+        weights = self.weightnet(grouped_xyz).permute(0, 3, 2, 1) # B, N, Neighbor_num, C_16
         new_points = new_points * grouped_density.permute(0, 3, 2, 1)
-        new_points = torch.matmul(input=new_points.permute(0, 3, 1, 2), other = weights.permute(0, 3, 2, 1)).view(B, self.npoint, -1)
+        new_points = new_points.permute(0, 3, 1, 2)  # B, N , C, Neighbor_num
+        new_points = torch.matmul(input=new_points, other=weights).view(B, self.npoint, -1) # B, N, C_16*C
         new_points = self.linear(new_points)
         new_points = self.bn_linear(new_points.permute(0, 2, 1))
         new_points = F.relu(new_points)

@@ -110,15 +110,6 @@ def main(args):
             points = points.transpose(2, 1)
             points, target = points.cuda(), target.cuda()
             #construct_planes(points[0])
-            if first_time:
-                print("first time...")
-                res = points[0].cpu().numpy()
-                np.save("sample", res)
-                print(target[0])
-                local_planes = MLS()
-                first_time = False
-                exit(0)
-
             optimizer.zero_grad()
             classifier = classifier.train()
             pred = classifier(points)

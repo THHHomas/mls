@@ -5,7 +5,8 @@
 import pcl
 import numpy as np
 import random
-
+from utils.mls import MLS
+import torch
 
 def main():
     # pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
@@ -153,4 +154,7 @@ def main():
 if __name__ == "__main__":
     # import cProfile
     # cProfile.run('main()', sort='time')
-    main()
+    # main()
+    points = np.load("./sample.npy").transpose(1, 0)
+    points = torch.from_numpy(points)
+    filtered_neighbor_list, coordinate = MLS(points, torch.range(0, points.shape[0]-1).long())

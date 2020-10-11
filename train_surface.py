@@ -16,14 +16,22 @@ from learning_based_surface.surfacenet import SurfaceNet
 from utils.mls import MLS, farthest_point_sample
 import h5py
 
+from tensorboardX import SummaryWriter
+import shutil
+
+if os.path.exists('log/exp'):
+    shutil.rmtree('log/exp')
+os.mkdir('log/exp')
+writer1 = SummaryWriter('log/exp/1')
+
 def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('PointConv')
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
-    parser.add_argument('--epoch',  default=400, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=100, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
-    parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
-    parser.add_argument('--train_metric', type=str, default=False, help='whether evaluate on training dataset')
+    parser.add_argument('--gpu', type=str, default='3', help='specify gpu device')
+    parser.add_argument('--train_metric', type=str, default=True, help='whether evaluate on training dataset')
     parser.add_argument('--optimizer', type=str, default='SGD', help='optimizer for training')
     parser.add_argument('--pretrain', type=str, default=None,help='whether use pretrain model')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
@@ -34,10 +42,8 @@ def construct_MLS(points, path, point_nums, phase='train'):
     data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
 
     points = torch.from_numpy(points)
-    point_nums = [points.shape[1]]+point_nums
+    point_nums = point_nums
     for i, point_num in enumerate(point_nums):
-        if i == len(point_nums)-1:
-            break
         local_coordinates = []
         neighbor_lists = []
         data_idx_lists = []
@@ -45,17 +51,20 @@ def construct_MLS(points, path, point_nums, phase='train'):
         coordinate_grp = data_file.create_group("coordinate"+str(i))
         idx_grp = data_file.create_group("idx"+str(i))
         new_points =[]
+        print("layer ", i)
         for idx in range(points.shape[0]):
+            if idx%100 == 0:
+                print("complete %f"%(float(idx)/float(points.shape[0])) )
             data = points[idx, :, :]
             data_idx = farthest_point_sample(data.unsqueeze(0), point_num).squeeze().long()
-            data = data[data_idx]
-            new_points.append(data)
-            filtered_neighbor_list, local_coordinate = MLS(data)
+            filtered_neighbor_list, local_coordinate = MLS(data, data_idx)
             local_coordinates.append(local_coordinate)
             data_idx_lists.append(data_idx)
             neighbor_lists.append(filtered_neighbor_list)
-            if idx > 10:
-                break
+
+            data = data[data_idx]
+            new_points.append(data)
+
         points = torch.stack(new_points)
         neighbor_lists = torch.stack(neighbor_lists)
         local_coordinates = torch.stack(local_coordinates)
@@ -70,11 +79,8 @@ def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
     local_coordinates = []
     neighbor_lists = []
     data_idx_lists = []
-    point_nums = [2048] + point_nums
+    point_nums = point_nums
     for i, point_num in enumerate(point_nums):
-        if i == len(point_nums) - 1:
-            break
-
         neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
         coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
         idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
@@ -155,11 +161,11 @@ def main(args):
     '''DATA LOADING'''
     logger.info('Load dataset ...')
     train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
-    '''logger.info('construct_MLS for train data...')
+    logger.info('construct_MLS for train data...')
     construct_MLS(train_data, auxiliarypath, classifier.point_num)
     logger.info('construct_MLS for test data...')
     construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')
-    exit(0)'''
+
     train_local_coordinates, train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
     logger.info("The number of training data is: %d",train_data.shape[0])
     logger.info("The number of test data is: %d", test_data.shape[0])
@@ -177,11 +183,13 @@ def main(args):
         logger.info('Epoch %d (%d/%s):' ,global_epoch + 1, epoch + 1, args.epoch)
 
         scheduler.step()
+        losses = 0
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
             points, target, local_coordinates, neighbor_lists, data_idx_lists = data
             target = target[:, 0]
-            points = points.transpose(2, 1)
-            points, target = points.cuda(), target.cuda()
+            # points = points.transpose(2, 1)
+            points, target, local_coordinates, neighbor_lists, data_idx_lists = \
+                points.cuda(), target.cuda(), local_coordinates.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
 
             optimizer.zero_grad()
             classifier = classifier.train()
@@ -191,13 +199,15 @@ def main(args):
             loss.backward()
             optimizer.step()
             global_step += 1
-        train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
+            losses += loss.item()
+        writer1.add_scalar('quadratic', losses/(batch_id+1), global_step=epoch)
+        if epoch%10 == 0:
+            train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
         acc = test(classifier, testDataLoader)
 
-
-        print('\r Loss: %f' % loss.data)
-        logger.info('Loss: %.2f', loss.data)
-        if args.train_metric:
+        print('\r Loss: %f' % float(losses/(batch_id+1)))
+        logger.info('Loss: %.2f', losses/(batch_id+1))
+        if args.train_metric and epoch%10==0:
             print('Train Accuracy: %f' % train_acc)
             logger.info('Train Accuracy: %f', (train_acc))
         print('\r Test %s: %f   ***  %s: %f' % (blue('Accuracy'),acc, blue('Best Accuracy'),best_tst_accuracy))

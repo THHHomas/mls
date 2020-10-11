@@ -29,12 +29,12 @@ def load_data(dir, classification=False):
     test_Seglabel = np.concatenate([Seglabel_test0,Seglabel_test1])
 
     if classification:
-        return train_data[0:12], train_label[0:12], test_data[0:12], test_label[0:12]
+        return train_data, train_label, test_data, test_label
     else:
         return train_data, train_Seglabel, test_data, test_Seglabel
 
 class ModelNetDataLoader(Dataset):
-    def __init__(self, data, labels, local_coordinates, neighbor_lists, data_idx_lists, rotation = None):
+    def __init__(self, data, labels, local_coordinates=None, neighbor_lists=None, data_idx_lists=None, rotation = None):
         self.data = data
         self.labels = labels
         self.rotation = rotation
@@ -68,4 +68,7 @@ class ModelNetDataLoader(Dataset):
             pointcloud = self.rotate_point_cloud_by_angle(pointcloud, angle)
             return pointcloud, self.labels[index]
         else:
-            return self.data[index], self.labels[index], self.local_coordinates[index], self.neighbor_lists[index], self.data_idx_lists[index]
+            if self.local_coordinates is not None:
+                return self.data[index], self.labels[index], self.local_coordinates[index], self.neighbor_lists[index], self.data_idx_lists[index]
+            else:
+                return self.data[index], self.labels[index]
