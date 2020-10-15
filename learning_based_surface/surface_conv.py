@@ -2,12 +2,17 @@ from utils.mls import MLS
 from torch import nn
 import torch.nn.functional as F
 import torch
+import math
 
 class WeightNet(nn.Module):
-
-    def __init__(self, in_channel, out_channel, hidden_unit=[8, 8]):
+    def __init__(self, in_channel, out_channel, hidden_len=3):
         super(WeightNet, self).__init__()
+        '''hidden_unit = []
+        steps = (math.log(out_channel) - 4)/hidden_len
 
+        for i in range(hidden_len):
+            hidden_unit.append(out_channel//(2**int(round(steps*(hidden_len-i)))))'''
+        hidden_unit = [4, 8]
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         if hidden_unit is None or len(hidden_unit) == 0:
@@ -28,37 +33,158 @@ class WeightNet(nn.Module):
         weights = localized_xyz
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
-            weights = F.relu(bn(conv(weights)))
+            weights = F.relu(bn(conv(weights.contiguous())))
 
         return weights
 
 
+
+class WeightNet2(nn.Module):
+
+    def __init__(self, in_channel, out_channel, hidden_unit=[8, 8, 16]):
+        super(WeightNet2, self).__init__()
+        '''for i in range(len(hidden_unit)):
+            hidden_unit[i] = out_channel//(2**(i+1))'''
+
+        self.mlp_convs = nn.ModuleList()
+        self.mlp_bns = nn.ModuleList()
+
+        self.mlp_convs.append(nn.Linear(in_channel, hidden_unit[0]))
+        self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[0]))
+        for i in range(1, len(hidden_unit)):
+            self.mlp_convs.append(nn.Linear(hidden_unit[i - 1], hidden_unit[i]))
+            self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[i]))
+        self.mlp_convs.append(nn.Linear(hidden_unit[-1], out_channel, 1))
+        self.mlp_bns.append(nn.BatchNorm1d(out_channel))
+
+    def forward(self, localized_xyz):
+        # xyz : BxCxKxN -> BxNxKxC
+        localized_xyz = localized_xyz.permute(0, 3, 2, 1)
+        B, N, K, C = localized_xyz.shape
+        localized_xyz = localized_xyz.reshape(-1, C)
+        weights = localized_xyz
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            weights = F.relu(bn(conv(weights)))
+        weights = weights.view(B, N, K, -1)  # BxNxKxC
+        weights = weights.permute(0, 3, 2, 1)  # BxCxKxN
+        return weights
+
+
+def index_points(points, idx):
+    """
+
+    Input:
+        points: input points data, [B, N, C]
+        idx: sample index data, [B, S]
+    Return:
+        new_points:, indexed points data, [B, S, C]
+    """
+    device = points.device
+    B = points.shape[0]
+    view_shape = list(idx.shape)
+    view_shape[1:] = [1] * (len(view_shape) - 1)
+    repeat_shape = list(idx.shape)
+    repeat_shape[0] = 1
+    batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)
+    new_points = points[batch_indices, idx, :]
+    return new_points
+
 class SurfaceConv(nn.Module):
     def __init__(self, npoint, in_channel,  mlp):
         super(SurfaceConv, self).__init__()
+        weight_channel = 16
+        self.mlp_convs = nn.ModuleList()
+        self.mlp_bns = nn.ModuleList()
+        last_channel = in_channel
+        for out_channel in mlp:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
 
-        self.linear = nn.Linear(16 * mlp[-1], mlp[-1])
+        self.linear = nn.Linear(weight_channel * mlp[-1], mlp[-1])
         self.bn_linear = nn.BatchNorm1d(mlp[-1])
         self.in_channel = in_channel
         self.npoint = npoint
-
+        self.weightnet = WeightNet(2, weight_channel)
     def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
-        """needs more modification"""
+        """needs more modification
+            neighbor_lists: B, N, Neighbor_num
+        """
+
+        if points is not None:
+            points = torch.cat((points, xyz), 2)
+        else:
+            points = xyz
+
         B, N, C = points.shape
 
         # fps sampling
+        new_xyz = index_points(xyz, data_idx)
+        grouped_points = index_points(points, neighbor_lists).permute(0, 3, 2, 1)
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            grouped_points = F.relu(bn(conv(grouped_points)))
+        grouped_points = grouped_points.permute(0, 3, 1, 2)
 
-        weights = self.weightnet(self.local_coordinates)
-        data = points[neighbor_lists]
-        new_points = torch.matmul(input=data, other=weights.permute(0, 3, 2, 1)).view(B,
-                                                                                                                self.npoint,
-                                                                                                                    -1)
-        new_points = new_points[data_idx]
+        local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
+
+        weights = self.weightnet(local_coordinates[:,0:2,:,:]).permute(0, 3, 2, 1)
+        new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
 
         new_points = self.linear(new_points)
         new_points = self.bn_linear(new_points.permute(0, 2, 1))
         new_points = F.relu(new_points)
-        return xyz, new_points
+        new_points = new_points.permute(0, 2, 1)
+
+        return new_xyz, new_points
+
+
+class Merge(nn.Module):
+    def __init__(self, npoint, in_channel,  mlp):
+        super(Merge, self).__init__()
+        weight_channel = 16
+        self.mlp_convs = nn.ModuleList()
+        self.mlp_bns = nn.ModuleList()
+        last_channel = in_channel
+        for out_channel in mlp:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
+
+        self.linear = nn.Linear(weight_channel * mlp[-1], mlp[-1])
+        self.bn_linear = nn.BatchNorm1d(mlp[-1])
+        self.in_channel = in_channel
+        self.npoint = npoint
+        self.weightnet = WeightNet(3, weight_channel)
+    def forward(self, xyz, points):
+        """needs more modification
+            neighbor_lists: B, N, Neighbor_num
+        """
+
+        # fps sampling
+        B, N, C = xyz.shape
+        # new_xyz = torch.zeros(B, 1, C).to(device)
+        new_xyz = xyz.mean(dim=1, keepdim=True)
+        grouped_xyz = xyz.view(B, 1, N, C) - new_xyz.view(B, 1, 1, C)
+        points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)  # [B, 1, npoint, C+D]
+        # Conv
+        points = points.permute(0, 3, 2, 1)  # [B, C+D, nsample,npoint]
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            points = F.relu(bn(conv(points.contiguous())))
+
+        grouped_xyz = grouped_xyz.permute(0, 3, 2, 1)
+        weights = self.weightnet(grouped_xyz)
+        new_points = torch.matmul(input=points.permute(0, 3, 1, 2), other=weights.permute(0, 3, 2, 1)).view(B,
+                                                                                                                self.npoint,
+                                                                                                                -1)
+        new_points = self.linear(new_points)
+        new_points = self.bn_linear(new_points.permute(0, 2, 1))
+        new_points = F.relu(new_points)
+        new_points = new_points.permute(0, 2, 1)
+
+        return new_xyz, new_points
 
 
 class SurfacePool(nn.Module):

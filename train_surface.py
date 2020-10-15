@@ -23,6 +23,7 @@ if os.path.exists('log/exp'):
     shutil.rmtree('log/exp')
 os.mkdir('log/exp')
 writer1 = SummaryWriter('log/exp/1')
+writer2 = SummaryWriter('log/exp/2')
 
 def parse_args():
     '''PARAMETERS'''
@@ -30,7 +31,7 @@ def parse_args():
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
     parser.add_argument('--epoch',  default=100, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
-    parser.add_argument('--gpu', type=str, default='3', help='specify gpu device')
+    parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
     parser.add_argument('--train_metric', type=str, default=True, help='whether evaluate on training dataset')
     parser.add_argument('--optimizer', type=str, default='SGD', help='optimizer for training')
     parser.add_argument('--pretrain', type=str, default=None,help='whether use pretrain model')
@@ -43,7 +44,9 @@ def construct_MLS(points, path, point_nums, phase='train'):
 
     points = torch.from_numpy(points)
     point_nums = point_nums
+    KNN_nums = [25, 25]
     for i, point_num in enumerate(point_nums):
+        KNN_num = KNN_nums[i]
         local_coordinates = []
         neighbor_lists = []
         data_idx_lists = []
@@ -57,7 +60,7 @@ def construct_MLS(points, path, point_nums, phase='train'):
                 print("complete %f"%(float(idx)/float(points.shape[0])) )
             data = points[idx, :, :]
             data_idx = farthest_point_sample(data.unsqueeze(0), point_num).squeeze().long()
-            filtered_neighbor_list, local_coordinate = MLS(data, data_idx)
+            filtered_neighbor_list, local_coordinate = MLS(data, data_idx, KNN_num)
             local_coordinates.append(local_coordinate)
             data_idx_lists.append(data_idx)
             neighbor_lists.append(filtered_neighbor_list)
@@ -81,6 +84,7 @@ def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
     data_idx_lists = []
     point_nums = point_nums
     for i, point_num in enumerate(point_nums):
+
         neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
         coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
         idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
@@ -161,10 +165,10 @@ def main(args):
     '''DATA LOADING'''
     logger.info('Load dataset ...')
     train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
-    logger.info('construct_MLS for train data...')
+    '''logger.info('construct_MLS for train data...')
     construct_MLS(train_data, auxiliarypath, classifier.point_num)
     logger.info('construct_MLS for test data...')
-    construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')
+    construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')'''
 
     train_local_coordinates, train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
     logger.info("The number of training data is: %d",train_data.shape[0])
@@ -200,10 +204,12 @@ def main(args):
             optimizer.step()
             global_step += 1
             losses += loss.item()
-        writer1.add_scalar('quadratic', losses/(batch_id+1), global_step=epoch)
+
         if epoch%10 == 0:
             train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
         acc = test(classifier, testDataLoader)
+        writer1.add_scalar('quadratic', losses / (batch_id + 1), global_step=epoch)
+        writer2.add_scalar('quadratic', acc, global_step=epoch)
 
         print('\r Loss: %f' % float(losses/(batch_id+1)))
         logger.info('Loss: %.2f', losses/(batch_id+1))

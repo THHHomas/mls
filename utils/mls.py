@@ -29,13 +29,13 @@ def visualize(x_coordinate, y_coordinate, f_i, parameter):
     ax.scatter3D(x_coordinate, y_coordinate, f_i, c='r', marker='o')
     plt.show()
 
-def inverse_distance(vector, h=0.1):
+def inverse_distance(vector, h=0.02):
     dis = (vector*vector).sum(1)
     return torch.exp(-dis/(h*h))
 
 
-def MLS(points, data_idx):
-    KNN_num = 48
+def MLS(points, data_idx, KNN_num):
+
     start_time = time()
     points = points.unsqueeze(0)
     neighbor_lists = knn_point(KNN_num, points, points).squeeze()
@@ -73,7 +73,7 @@ def MLS(points, data_idx):
         local_vector = relative_shift - f_i.repeat(3,1).T*init_n
         x_coordinate = local_vector.matmul(x_axis)
         y_coordinate = local_vector.matmul(y_axis)
-        coordinate = torch.stack((x_coordinate, y_coordinate, f_i)).T
+        # coordinate = torch.stack((x_coordinate, y_coordinate, f_i)).T
         # local_coordinate.append(coordinate)
         # minimize()
 
@@ -93,7 +93,6 @@ def MLS(points, data_idx):
             solve_time += time()-local_start
 
             # partition with radius
-
             predict_f_i = parameter.T.matmul(base).squeeze()
             temp = torch.stack((x_coordinate, y_coordinate, predict_f_i)).T
             local_coordinate.append(temp)

@@ -5,7 +5,7 @@
 import pcl
 import numpy as np
 import random
-from utils.mls import MLS
+from utils.mls import MLS, farthest_point_sample
 import torch
 
 def main():
@@ -157,4 +157,7 @@ if __name__ == "__main__":
     # main()
     points = np.load("./sample.npy").transpose(1, 0)
     points = torch.from_numpy(points)
-    filtered_neighbor_list, coordinate = MLS(points, torch.range(0, points.shape[0]-1).long())
+    data_idx = farthest_point_sample(points.unsqueeze(0), 512).squeeze().long()
+    points = points[data_idx]
+    data_idx = farthest_point_sample(points.unsqueeze(0), 128).squeeze().long()
+    filtered_neighbor_list, coordinate = MLS(points, data_idx, 32)
