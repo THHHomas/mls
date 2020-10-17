@@ -77,7 +77,7 @@ def save_checkpoint(epoch, train_accuracy, test_accuracy, model, optimizer, path
     }
     torch.save(state, savepath)
 
-def test(model, loader):
+def test(classifier, loader):
     mean_correct = []
     for j, data in enumerate(loader, 0):
         if len(data)==5:
@@ -85,7 +85,7 @@ def test(model, loader):
             target = target[:, 0]
             points, target, local_coordinates, neighbor_lists, data_idx_lists = \
                 points.cuda(), target.cuda(), local_coordinates.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
-            classifier = model.eval()
+            # classifier = model.eval()
             with torch.no_grad():
                 pred = classifier(points, local_coordinates, neighbor_lists, data_idx_lists)
         elif len(data)==2:
@@ -93,7 +93,7 @@ def test(model, loader):
             points = points.permute(0, 2, 1)
             target = target[:, 0]
             points, target,  = points.cuda(), target.cuda()
-            classifier = model.eval()
+            # classifier = model.eval()
             with torch.no_grad():
                 pred = classifier(points)
 

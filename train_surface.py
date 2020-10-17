@@ -24,6 +24,7 @@ if os.path.exists('log/exp'):
 os.mkdir('log/exp')
 writer1 = SummaryWriter('log/exp/1')
 writer2 = SummaryWriter('log/exp/2')
+writer3 = SummaryWriter('log/exp/3')
 
 def parse_args():
     '''PARAMETERS'''
@@ -44,7 +45,7 @@ def construct_MLS(points, path, point_nums, phase='train'):
 
     points = torch.from_numpy(points)
     point_nums = point_nums
-    KNN_nums = [25, 25]
+    KNN_nums = [64, 64]
     for i, point_num in enumerate(point_nums):
         KNN_num = KNN_nums[i]
         local_coordinates = []
@@ -165,10 +166,10 @@ def main(args):
     '''DATA LOADING'''
     logger.info('Load dataset ...')
     train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
-    '''logger.info('construct_MLS for train data...')
+    logger.info('construct_MLS for train data...')
     construct_MLS(train_data, auxiliarypath, classifier.point_num)
     logger.info('construct_MLS for test data...')
-    construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')'''
+    construct_MLS(test_data, auxiliarypath, classifier.point_num, phase='test')
 
     train_local_coordinates, train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
     logger.info("The number of training data is: %d",train_data.shape[0])
@@ -205,21 +206,23 @@ def main(args):
             global_step += 1
             losses += loss.item()
 
-        if epoch%10 == 0:
+        if epoch%10 == 9:
             train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
-        acc = test(classifier, testDataLoader)
+            writer3.add_scalar('quadratic', train_acc, global_step=epoch)
+        acc = test(classifier.eval(), testDataLoader)
         writer1.add_scalar('quadratic', losses / (batch_id + 1), global_step=epoch)
         writer2.add_scalar('quadratic', acc, global_step=epoch)
 
+
         print('\r Loss: %f' % float(losses/(batch_id+1)))
         logger.info('Loss: %.2f', losses/(batch_id+1))
-        if args.train_metric and epoch%10==0:
+        if args.train_metric and epoch%10==9:
             print('Train Accuracy: %f' % train_acc)
             logger.info('Train Accuracy: %f', (train_acc))
         print('\r Test %s: %f   ***  %s: %f' % (blue('Accuracy'),acc, blue('Best Accuracy'),best_tst_accuracy))
         logger.info('Test Accuracy: %f  *** Best Test Accuracy: %f', acc, best_tst_accuracy)
 
-        if (acc >= best_tst_accuracy) and epoch > 5:
+        if (acc >= best_tst_accuracy) and epoch > 10:
             best_tst_accuracy = acc
             logger.info('Save model...')
             save_checkpoint(

@@ -2,8 +2,16 @@ import numpy as np
 import warnings
 import h5py
 from torch.utils.data import Dataset
+import torch
+import matplotlib.pyplot as plt
 warnings.filterwarnings('ignore')
 
+def num_per_class_cal(train_label):
+    train_label_vis = torch.from_numpy(train_label).squeeze().long()
+    num_per_class = torch.zeros(40)
+    others = torch.ones_like(train_label_vis).float()
+    num_per_class.scatter_add_(0, train_label_vis, others)
+    return num_per_class.numpy()
 
 def load_h5(h5_filename):
     f = h5py.File(h5_filename)
@@ -27,6 +35,13 @@ def load_data(dir, classification=False):
     test_data = np.concatenate([data_test0,data_test1])
     test_label = np.concatenate([label_test0,label_test1])
     test_Seglabel = np.concatenate([Seglabel_test0,Seglabel_test1])
+
+    #num_per_class_train = num_per_class_cal(train_label)
+    #num_per_class_test = num_per_class_cal(test_label)
+    #plt.bar([x for x in range(40)] ,num_per_class_test)
+    #plt.title('test data num per class')
+    #plt.show()
+
 
     if classification:
         return train_data, train_label, test_data, test_label

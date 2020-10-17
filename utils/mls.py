@@ -29,7 +29,8 @@ def visualize(x_coordinate, y_coordinate, f_i, parameter):
     ax.scatter3D(x_coordinate, y_coordinate, f_i, c='r', marker='o')
     plt.show()
 
-def inverse_distance(vector, h=0.02):
+
+def inverse_distance(vector, h=0.2):
     dis = (vector*vector).sum(1)
     return torch.exp(-dis/(h*h))
 
@@ -41,6 +42,8 @@ def MLS(points, data_idx, KNN_num):
     neighbor_lists = knn_point(KNN_num, points, points).squeeze()
     points = points.squeeze()
     n_list = []
+    chosen_data_num = KNN_num // 2
+    chosen_neighbor_lists = []
     error_rate_list = []
     projected_points = []
     rate = 0
@@ -49,9 +52,10 @@ def MLS(points, data_idx, KNN_num):
 
     svd_time = 0
     solve_time = 0
-
+    no_surface_num = 0
     for i in data_idx:
         # Fit the plane
+
         r = points[i, :]
         neighbors = points[neighbor_lists[i]]
         relative_shift = neighbors - r
@@ -70,7 +74,7 @@ def MLS(points, data_idx, KNN_num):
         x_axis = x_axis/(x_axis.norm()+eps)
         y_axis = init_n.cross(x_axis)
         f_i = relative_shift.matmul(init_n)
-        local_vector = relative_shift - f_i.repeat(3,1).T*init_n
+        local_vector = relative_shift - f_i.repeat(3, 1).T*init_n
         x_coordinate = local_vector.matmul(x_axis)
         y_coordinate = local_vector.matmul(y_axis)
         # coordinate = torch.stack((x_coordinate, y_coordinate, f_i)).T
@@ -88,33 +92,165 @@ def MLS(points, data_idx, KNN_num):
         F = base.matmul(f_i*theta_i).unsqueeze(1)
         try:
             local_start = time()
+            current_idx = i
             parameter, LU = torch.solve(F*1000, B*1000)
-            # visualize(x_coordinate, y_coordinate, f_i, parameter)
+
             solve_time += time()-local_start
 
             # partition with radius
             predict_f_i = parameter.T.matmul(base).squeeze()
+            chosen_neighbor = np.where(abs(predict_f_i-f_i) < 0.01)[0]
+            # visualize(x_coordinate[choosen_neighbor], y_coordinate[choosen_neighbor], f_i[choosen_neighbor], parameter)
+
             temp = torch.stack((x_coordinate, y_coordinate, predict_f_i)).T
+            chosen_neighbor_list = []
+            if len(chosen_neighbor) == 0:
+                chosen_neighbor = torch.tensor([0]*chosen_data_num)
+                temp = temp[chosen_neighbor]
+                chosen_neighbor_list=neighbor_lists[i][chosen_neighbor]
+            elif len(chosen_neighbor) >= chosen_data_num:
+                chosen_neighbor = chosen_neighbor[0:chosen_data_num]
+                temp = temp[chosen_neighbor]
+                chosen_neighbor_list = neighbor_lists[i][chosen_neighbor]
+            else:
+                appended_data_num = chosen_data_num - len(chosen_neighbor)
+                temp = temp[chosen_neighbor]
+                appended_data_index = np.random.choice([x for x in range(len(chosen_neighbor))], appended_data_num)
+                chosen_neighbor_list = torch.cat((neighbor_lists[i][chosen_neighbor],
+                                                  neighbor_lists[i][appended_data_index]), 0)
+                temp = torch.cat((temp, temp[appended_data_index, :]), 0)
+            chosen_neighbor_lists.append(chosen_neighbor_list)
             local_coordinate.append(temp)
         except:
-            print("no surface", i)
-            local_coordinate.append(torch.stack((x_coordinate, y_coordinate, f_i)).T)
+            no_surface_num += 1
+            local_coordinate.append(torch.stack((x_coordinate, y_coordinate, f_i)).T[0:chosen_data_num])
+            chosen_neighbor_lists.append(neighbor_lists[i][0:chosen_data_num])
 
         #projected_point = (r + local_vector + predict_f_i.repeat(3, 1).T * init_n)
         #projected_point = projected_point[indices, :]
         #origin_projected_point = parameter[0]*init_n + r
         #projected_points.append(projected_point)
         # projected_points.append(origin_projected_point.unsqueeze(0).numpy())'''
-
+    if no_surface_num > 0:
+        print("no surface number is:", no_surface_num)
     #projected_points = torch.cat(projected_points)
     local_coordinate = torch.cat(local_coordinate)
+    chosen_neighbor_lists = torch.stack(chosen_neighbor_lists)
     # points2pcd(projected_points, "projected")
     # print("plane time is: ", time()-start_time)
     neighbor_lists = neighbor_lists[data_idx]
-    if local_coordinate.shape[0] != len(data_idx)*KNN_num:
+    if local_coordinate.shape[0] != len(data_idx)*KNN_num//2:
         print("hello")
-    return neighbor_lists, local_coordinate
+    return chosen_neighbor_lists, local_coordinate
 
+
+
+def MLS_surface_conv(points, data_idx, KNN_num):
+    start_time = time()
+    points = points.unsqueeze(0)
+    neighbor_lists = knn_point(KNN_num, points, points).squeeze()
+    points = points.squeeze()
+    n_list = []
+    chosen_data_num = KNN_num // 2
+    chosen_neighbor_lists = []
+    error_rate_list = []
+    projected_points = []
+    rate = 0
+    local_coordinate = []
+    filtered_neighbor_list = []
+
+    svd_time = 0
+    solve_time = 0
+    no_surface_num = 0
+    for i in data_idx:
+        # Fit the plane
+
+        r = points[i, :]
+        neighbors = points[neighbor_lists[i]]
+        relative_shift = neighbors - r
+        theta_i = inverse_distance(relative_shift)
+        A = torch.matmul(torch.matmul(relative_shift.T, torch.diag(theta_i)), relative_shift)
+        local_start = time()
+        res = torch.eig(A, eigenvectors=True)
+        svd_time += time()-local_start
+        init_n = res.eigenvectors[:, 2]
+        # Powell iteration (optional)
+        n_list.append(init_n)
+
+        # Fit polynomial function
+        nTr = init_n.matmul(r)
+        x_axis = torch.tensor([0, 0, nTr/(init_n[2]+eps)]) - r
+        x_axis = x_axis/(x_axis.norm()+eps)
+        y_axis = init_n.cross(x_axis)
+        f_i = relative_shift.matmul(init_n)
+        local_vector = relative_shift - f_i.repeat(3, 1).T*init_n
+        x_coordinate = local_vector.matmul(x_axis)
+        y_coordinate = local_vector.matmul(y_axis)
+        # coordinate = torch.stack((x_coordinate, y_coordinate, f_i)).T
+        # local_coordinate.append(coordinate)
+        # minimize()
+
+        base = torch.stack([torch.ones_like(x_coordinate), x_coordinate, y_coordinate, x_coordinate*y_coordinate,
+                            x_coordinate**2, y_coordinate**2, x_coordinate**2*y_coordinate, y_coordinate**2*x_coordinate,
+                            x_coordinate**3, y_coordinate**3])#, x_coordinate**4, x_coordinate**3*y_coordinate,
+                            #x_coordinate**2*y_coordinate**2, x_coordinate*y_coordinate**3, y_coordinate**4])
+        #B = base.matmul(torch.diag(theta_i)).matmul(base.T)
+        B = base.matmul(torch.diag(theta_i)).matmul(base.T)
+        lamd = 1e-10
+        # B =B + torch.eye(B.shape[0])*lamd
+        F = base.matmul(f_i*theta_i).unsqueeze(1)
+        try:
+            local_start = time()
+            current_idx = i
+            parameter, LU = torch.solve(F*1000, B*1000)
+
+            solve_time += time()-local_start
+
+            # partition with radius
+            predict_f_i = parameter.T.matmul(base).squeeze()
+            chosen_neighbor = np.where(abs(predict_f_i-f_i) < 0.01)[0]
+            # visualize(x_coordinate[choosen_neighbor], y_coordinate[choosen_neighbor], f_i[choosen_neighbor], parameter)
+
+            temp = torch.stack((x_coordinate, y_coordinate, predict_f_i)).T
+            chosen_neighbor_list = []
+            if len(chosen_neighbor) == 0:
+                chosen_neighbor = torch.tensor([0]*chosen_data_num)
+                temp = temp[chosen_neighbor]
+                chosen_neighbor_list=neighbor_lists[i][chosen_neighbor]
+            elif len(chosen_neighbor) >= chosen_data_num:
+                chosen_neighbor = chosen_neighbor[0:chosen_data_num]
+                temp = temp[chosen_neighbor]
+                chosen_neighbor_list = neighbor_lists[i][chosen_neighbor]
+            else:
+                appended_data_num = chosen_data_num - len(chosen_neighbor)
+                temp = temp[chosen_neighbor]
+                appended_data_index = np.random.choice([x for x in range(len(chosen_neighbor))], appended_data_num)
+                chosen_neighbor_list = torch.cat((neighbor_lists[i][chosen_neighbor],
+                                                  neighbor_lists[i][appended_data_index]), 0)
+                temp = torch.cat((temp, temp[appended_data_index, :]), 0)
+            chosen_neighbor_lists.append(chosen_neighbor_list)
+            local_coordinate.append(temp)
+        except:
+            no_surface_num += 1
+            local_coordinate.append(torch.stack((x_coordinate, y_coordinate, f_i)).T[0:chosen_data_num])
+            chosen_neighbor_lists.append(neighbor_lists[i][0:chosen_data_num])
+
+        #projected_point = (r + local_vector + predict_f_i.repeat(3, 1).T * init_n)
+        #projected_point = projected_point[indices, :]
+        #origin_projected_point = parameter[0]*init_n + r
+        #projected_points.append(projected_point)
+        # projected_points.append(origin_projected_point.unsqueeze(0).numpy())'''
+    if no_surface_num > 0:
+        print("no surface number is:", no_surface_num)
+    #projected_points = torch.cat(projected_points)
+    local_coordinate = torch.cat(local_coordinate)
+    chosen_neighbor_lists = torch.stack(chosen_neighbor_lists)
+    # points2pcd(projected_points, "projected")
+    # print("plane time is: ", time()-start_time)
+    neighbor_lists = neighbor_lists[data_idx]
+    if local_coordinate.shape[0] != len(data_idx)*KNN_num//2:
+        print("hello")
+    return chosen_neighbor_lists, local_coordinate
 
 def farthest_point_sample(xyz, npoint):
     """

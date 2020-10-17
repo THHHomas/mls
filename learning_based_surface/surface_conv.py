@@ -102,11 +102,12 @@ class SurfaceConv(nn.Module):
             self.mlp_bns.append(nn.BatchNorm2d(out_channel))
             last_channel = out_channel
 
+        # self.bn_conv = nn.BatchNorm1d(weight_channel * mlp[-1])
         self.linear = nn.Linear(weight_channel * mlp[-1], mlp[-1])
         self.bn_linear = nn.BatchNorm1d(mlp[-1])
         self.in_channel = in_channel
         self.npoint = npoint
-        self.weightnet = WeightNet(2, weight_channel)
+        self.weightnet = WeightNet(3, weight_channel)
     def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
         """needs more modification
             neighbor_lists: B, N, Neighbor_num
@@ -129,15 +130,16 @@ class SurfaceConv(nn.Module):
 
         local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
 
-        weights = self.weightnet(local_coordinates[:,0:2,:,:]).permute(0, 3, 2, 1)
+        weights = self.weightnet(local_coordinates[:,:,:,:]).permute(0, 3, 2, 1)
         new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
+        # new_points = self.bn_conv(new_points.permute(0, 2, 1)).permute(0, 2, 1)
 
         new_points = self.linear(new_points)
-        new_points = self.bn_linear(new_points.permute(0, 2, 1))
+        new_points = self.bn_linear(new_points.permute(0, 2, 1)).permute(0, 2, 1)
         new_points = F.relu(new_points)
-        new_points = new_points.permute(0, 2, 1)
 
         return new_xyz, new_points
+
 
 
 class Merge(nn.Module):

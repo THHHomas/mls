@@ -31,7 +31,7 @@ class SurfaceNet(nn.Module):
         self.drop2 = nn.Dropout(0.4)
         self.fc3 = nn.Linear(256, num_classes)
         self.point_num = point_num
-        self.KNN_nums = [25, 25]
+        self.KNN_nums = [32, 32]
 
     def forward(self, xyz, local_coordinates, neighbors, data_idxes):
         B, N, C = xyz.shape

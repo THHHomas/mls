@@ -157,7 +157,7 @@ if __name__ == "__main__":
     # main()
     points = np.load("./sample.npy").transpose(1, 0)
     points = torch.from_numpy(points)
-    data_idx = farthest_point_sample(points.unsqueeze(0), 512).squeeze().long()
-    points = points[data_idx]
-    data_idx = farthest_point_sample(points.unsqueeze(0), 128).squeeze().long()
-    filtered_neighbor_list, coordinate = MLS(points, data_idx, 32)
+    #data_idx = farthest_point_sample(points.unsqueeze(0), 512).squeeze().long()
+    # points = points[data_idx]
+    #data_idx = farthest_point_sample(points.unsqueeze(0), 128).squeeze().long()
+    filtered_neighbor_list, coordinate = MLS(points, torch.range(0, 2047).long(), 64)
