@@ -29,36 +29,35 @@ class WeightNet(nn.Module):
 
     def forward(self, localized_xyz):
         # xyz : BxCxKxN
-
         weights = localized_xyz
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
             weights = F.relu(bn(conv(weights.contiguous())))
-
         return weights
-
 
 
 class WeightNet2(nn.Module):
 
-    def __init__(self, in_channel, out_channel, hidden_unit=[8, 8, 16]):
+    def __init__(self, in_channel, pre_channel, out_channel, hidden_unit=[8, 8, 16]):
         super(WeightNet2, self).__init__()
         '''for i in range(len(hidden_unit)):
             hidden_unit[i] = out_channel//(2**(i+1))'''
-
+        self.out_channel = out_channel
+        self.pre_channel = pre_channel
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
 
-        self.mlp_convs.append(nn.Linear(in_channel, hidden_unit[0]))
-        self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[0]))
+        self.mlp_convs.append(nn.Linear(in_channel, hidden_unit[0]*pre_channel))
+        self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[0]*pre_channel))
         for i in range(1, len(hidden_unit)):
-            self.mlp_convs.append(nn.Linear(hidden_unit[i - 1], hidden_unit[i]))
-            self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[i]))
-        self.mlp_convs.append(nn.Linear(hidden_unit[-1], out_channel, 1))
-        self.mlp_bns.append(nn.BatchNorm1d(out_channel))
+            self.mlp_convs.append(nn.Linear(hidden_unit[i - 1]*pre_channel, hidden_unit[i]*pre_channel))
+            self.mlp_bns.append(nn.BatchNorm1d(hidden_unit[i]*pre_channel))
+        self.mlp_convs.append(nn.Linear(hidden_unit[-1]*pre_channel, out_channel*pre_channel, 1))
+        self.mlp_bns.append(nn.BatchNorm1d(out_channel*pre_channel))
 
     def forward(self, localized_xyz):
-        # xyz : BxCxKxN -> BxNxKxC
+        # input: xyz : BxCxKxN -> BxNxKxC1
+        # output: weight : BxNxKxPrexC2
         localized_xyz = localized_xyz.permute(0, 3, 2, 1)
         B, N, K, C = localized_xyz.shape
         localized_xyz = localized_xyz.reshape(-1, C)
@@ -66,14 +65,12 @@ class WeightNet2(nn.Module):
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
             weights = F.relu(bn(conv(weights)))
-        weights = weights.view(B, N, K, -1)  # BxNxKxC
-        weights = weights.permute(0, 3, 2, 1)  # BxCxKxN
+        weights = weights.view(B, N, K, self.pre_channel, self.out_channel)  # BxNxKxPreXC2
         return weights
 
 
 def index_points(points, idx):
     """
-
     Input:
         points: input points data, [B, N, C]
         idx: sample index data, [B, S]
@@ -93,7 +90,7 @@ def index_points(points, idx):
 class SurfaceConv(nn.Module):
     def __init__(self, npoint, in_channel,  mlp):
         super(SurfaceConv, self).__init__()
-        weight_channel = 16
+        weight_channel = mlp[-2]
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         last_channel = in_channel
@@ -107,7 +104,93 @@ class SurfaceConv(nn.Module):
         self.bn_linear = nn.BatchNorm1d(mlp[-1])
         self.in_channel = in_channel
         self.npoint = npoint
-        self.weightnet = WeightNet(3, weight_channel)
+        self.weightnet = WeightNet(2, weight_channel)
+    def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
+        """needs more modification
+            neighbor_lists: B, N, Neighbor_num
+        """
+        B, N, _ = xyz.shape
+        # fps sampling index
+        new_xyz = index_points(xyz, data_idx)
+        if points is not None:
+            points = torch.cat((points, xyz), 2)
+            grouped_points = index_points(points, neighbor_lists).permute(0, 3, 2, 1)
+        else:
+            grouped_points = (local_coordinates + new_xyz.unsqueeze(2)).permute(0, 3, 2, 1)
+
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            grouped_points = F.relu(bn(conv(grouped_points)))
+        grouped_points = grouped_points.permute(0, 3, 1, 2)
+
+        local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
+
+        weights = self.weightnet(local_coordinates[:, 0:2, :, :]).permute(0, 3, 2, 1)
+        new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
+        # new_points = self.bn_conv(new_points.permute(0, 2, 1)).permute(0, 2, 1)
+
+        new_points = self.linear(new_points)
+        new_points = self.bn_linear(new_points.permute(0, 2, 1)).permute(0, 2, 1)
+        new_points = F.relu(new_points)
+
+        return new_xyz, new_points
+
+
+class SurfaceConvPurity(nn.Module):
+    def __init__(self, npoint, in_channel,  out_channel):
+        super(SurfaceConvPurity, self).__init__()
+        weight_channel = out_channel
+        self.bn_conv = nn.BatchNorm1d(out_channel *in_channel)
+        self.linear = nn.Linear(in_channel*out_channel, out_channel)
+        self.bn_linear = nn.BatchNorm1d(out_channel)
+        self.in_channel = in_channel
+        self.npoint = npoint
+        self.weightnet = WeightNet(3, out_channel)
+    def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
+        """needs more modification
+            neighbor_lists: B, N, Neighbor_num
+        """
+        B, N, _ = xyz.shape
+        # fps sampling index
+        new_xyz = index_points(xyz, data_idx)
+        if points is not None:
+            points = torch.cat((points, xyz), 2)
+            grouped_points = index_points(points, neighbor_lists).permute(0, 3, 2, 1)
+        else:
+            grouped_points = index_points(xyz, neighbor_lists).permute(0, 3, 2, 1)  # (local_coordinates + new_xyz.unsqueeze(2)).permute(0, 3, 2, 1)
+
+        grouped_points = grouped_points.permute(0, 3, 1, 2)  # BNCK
+
+        local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
+
+        weights = self.weightnet(local_coordinates[:, :, :, :]).permute(0, 3, 2, 1)  # BNKO
+        new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
+        new_points = F.relu(self.bn_conv(new_points.permute(0, 2, 1)).permute(0, 2, 1))
+
+        new_points = self.linear(new_points)
+        new_points = self.bn_linear(new_points.permute(0, 2, 1)).permute(0, 2, 1)
+        new_points = F.relu(new_points)
+
+        return new_xyz, new_points
+
+class SurfaceConv2(nn.Module):
+    def __init__(self, npoint, in_channel,  mlp):
+        super(SurfaceConv2, self).__init__()
+        self.mlp = mlp
+        self.mlp_convs = nn.ModuleList()
+        self.mlp_bns = nn.ModuleList()
+        last_channel = in_channel
+        for out_channel in mlp[0:-1]:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
+
+        # self.bn_conv = nn.BatchNorm1d(weight_channel * mlp[-1])
+        self.linear = nn.Linear(mlp[-1], mlp[-1])
+        self.bn_linear = nn.BatchNorm1d(mlp[-1])
+        self.in_channel = in_channel
+        self.npoint = npoint
+        self.weightnet = WeightNet2(3, mlp[-2], mlp[-1])
     def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
         """needs more modification
             neighbor_lists: B, N, Neighbor_num
@@ -126,12 +209,15 @@ class SurfaceConv(nn.Module):
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
             grouped_points = F.relu(bn(conv(grouped_points)))
-        grouped_points = grouped_points.permute(0, 3, 1, 2)
+        grouped_points = grouped_points.permute(0, 3, 1, 2)  # BNIK
+        grouped_points = grouped_points.reshape(B, self.npoint, -1, 1)
 
         local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
 
-        weights = self.weightnet(local_coordinates[:,:,:,:]).permute(0, 3, 2, 1)
-        new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
+        weights = self.weightnet(local_coordinates[:,:,:,:])  # BNKIO
+        weights = weights.permute(0, 1, 4, 3, 2)  # BNOIK
+        weights = weights.reshape(B, self.npoint, self.mlp[-1], -1)
+        new_points = torch.matmul(input=weights, other=grouped_points).view(B, self.npoint, -1) #
         # new_points = self.bn_conv(new_points.permute(0, 2, 1)).permute(0, 2, 1)
 
         new_points = self.linear(new_points)
@@ -139,8 +225,6 @@ class SurfaceConv(nn.Module):
         new_points = F.relu(new_points)
 
         return new_xyz, new_points
-
-
 
 class Merge(nn.Module):
     def __init__(self, npoint, in_channel,  mlp):

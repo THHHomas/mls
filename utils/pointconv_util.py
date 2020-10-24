@@ -103,7 +103,7 @@ def query_ball_point(radius, nsample, xyz, new_xyz):
     group_idx[mask] = group_first[mask]
     return group_idx
 
-def knn_point(nsample, xyz, new_xyz):
+def knn_point(nsample, xyz, new_xyz, raduis=0.15):
     """
     Input:
         nsample: max sample number in local region
@@ -112,7 +112,7 @@ def knn_point(nsample, xyz, new_xyz):
     Return:
         group_idx: grouped points index, [B, S, nsample]
     """
-    sqrdists = square_distance(new_xyz, xyz)
+    sqrdists = square_distance(new_xyz, xyz).squeeze()
     _, group_idx = torch.topk(sqrdists, nsample, dim = -1, largest=False, sorted=False)
     return group_idx
 
