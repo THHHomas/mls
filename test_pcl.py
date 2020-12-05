@@ -62,6 +62,7 @@ if __name__ == "__main__":
     ss = time.time()
     data_idx = torch.arange(0, points.shape[0], device=points.device)
     for i in range(1):
-        filtered_neighbor_list, coordinate = MLS_batch(points, data_idx, 32)
+        filtered_neighbor_list, coordinate, paramters = MLS_batch(points.repeat(1,2), data_idx, 32)
+
     print("comsuming time is:", (time.time()-ss)/10)
 

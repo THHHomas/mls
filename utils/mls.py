@@ -21,7 +21,11 @@ def visualize(x_coordinate, y_coordinate, f_i, parameter):
                             grid_x ** 2, grid_y ** 2])  # , grid_x ** 2 * grid_y, grid_y ** 2 * grid_x,
     # grid_x ** 3, grid_y ** 3])
     # predict_f_i = parameter.T.matmul(base).squeeze()
-    grid_predict_f_i = parameter.T.matmul(new_base).squeeze()
+    if parameter is not None:
+        grid_predict_f_i = parameter.T.matmul(new_base).squeeze()
+    else:
+        grid_predict_f_i = torch.zeros_like(grid_x)
+
     fig = plt.figure(1, figsize=(12, 8))
     ax = fig.add_subplot(1, 1, 1, projection='3d')
     ax.set_top_view()
@@ -152,10 +156,13 @@ def MLS(points, data_idx, KNN_num, radius=0.15):
 
 def MLS_batch(points, data_idx, KNN_num, radius=0.15):
     start_time = time()
+    origin_points = points[:, 3:]
+    points = points[:, 0:3]
     points = points[data_idx]
+    origin_points = origin_points[data_idx]
     points = points.unsqueeze(0)
     neighbor_lists = knn_point(KNN_num, points, points).squeeze()
-    points = points.squeeze()
+    '''points = points.squeeze()
 
     r = points  # NC
     neighbors = index_points(points.unsqueeze(0), neighbor_lists.unsqueeze(0)).squeeze()  # N, K, C
@@ -164,19 +171,29 @@ def MLS_batch(points, data_idx, KNN_num, radius=0.15):
 
     A = torch.matmul((relative_shift * (theta_i.unsqueeze(2))).permute(0, 2, 1), relative_shift)
     U, S, V = torch.svd(A)
+    # viewpoint at x axis
     init_n = U[:, :, 2].squeeze()  # N, C
-    nTx = init_n.matmul(torch.tensor([1.0, 0.0, 0.0], device=init_n.device))
+    init_n_dir = origin_points  # N, C
+    nTx = (init_n*init_n_dir).sum(1)
+    # nTx = init_n.matmul(torch.tensor([1.0, 0.0, 0.0], device=init_n.device))
     dir = (nTx > 0).float() * 2 - 1
     init_n = init_n * (dir.unsqueeze(1))  # N C
+
     nTr = (init_n * r).sum(1)  # N
-    x_axis = torch.stack((torch.zeros_like(nTr), torch.zeros_like(nTr), nTr / (init_n[:, 2] + eps))).T - r  # N C
+
+    # x_axis = torch.stack((torch.zeros_like(nTr), torch.zeros_like(nTr), nTr / (init_n[:, 2] + eps))).T - r  # N C
+    x_axis = torch.stack([init_n[:, 2]/(init_n[:, 0] + eps), init_n[:, 2]/(init_n[:, 1] + eps), -2*torch.ones_like(nTr)]).T
+    # dir = (x_axis[:, 2] < 0).float() * 2 - 1
+    # x_axis = x_axis * (dir.unsqueeze(1))  # N C
+
     x_axis = x_axis / (x_axis.norm(dim=1, keepdim=True) + eps)
     y_axis = init_n.cross(x_axis)  # N C
+
     f_i = relative_shift.matmul(init_n.unsqueeze(2))  # N, K, 1
     local_vector = relative_shift - f_i.repeat(1, 1, 3) * init_n.unsqueeze(1)  # NKC
     x_coordinate = local_vector.matmul(x_axis.unsqueeze(2)).squeeze()  # NK
     y_coordinate = local_vector.matmul(y_axis.unsqueeze(2)).squeeze()  # NK
-    # local_coordinate = torch.stack((x_coordinate, y_coordinate, f_i.squeeze())).permute(1, 2, 0)  # NKC
+    local_coordinate = torch.stack((x_coordinate, y_coordinate, f_i.squeeze())).permute(1, 2, 0)  # NKC
     # local_coordinate = relative_shift
     base = torch.stack([torch.ones_like(x_coordinate), x_coordinate, y_coordinate, x_coordinate * y_coordinate,
                         x_coordinate ** 2,
@@ -186,15 +203,15 @@ def MLS_batch(points, data_idx, KNN_num, radius=0.15):
     base = base.permute(1, 0, 2)  # NDK
     B = torch.matmul(base * (theta_i.unsqueeze(1)), base.permute(0, 2, 1))
     F = base.matmul(f_i * (theta_i.unsqueeze(2)))
-    parameter, LU = torch.solve(F * 1000, B * 1000)  # ND
+    parameter, LU = torch.solve(F, B)  # ND
     predict_f_i = torch.matmul(parameter.permute(0, 2, 1), base).squeeze()
 
-    # local_coordinate = torch.stack((x_coordinate, y_coordinate, predict_f_i)).permute(1, 2, 0)   # NKC
-    local_coordinate = x_axis.unsqueeze(1) * x_coordinate.unsqueeze(2) + y_axis.unsqueeze(1) * y_coordinate.unsqueeze(
-        2) + init_n.unsqueeze(1) * predict_f_i.unsqueeze(2)
-    for i in range(10):
-        visualize(x_coordinate[i], y_coordinate[i], predict_f_i[i], parameter[i])
-    return neighbor_lists, local_coordinate
+    # local_coordinate = torch.stack((x_coordinate, y_coordinate, f_i)).permute(1, 2, 0)   # NKC
+    # local_coordinate = x_axis.unsqueeze(1) * x_coordinate.unsqueeze(2) + y_axis.unsqueeze(1) * y_coordinate.unsqueeze(
+    #    2) + init_n.unsqueeze(1) * predict_f_i.unsqueeze(2)
+    # for i in range(10):
+    #    visualize(x_coordinate[i], y_coordinate[i], predict_f_i[i], parameter[i])'''
+    return neighbor_lists  # , local_coordinate, parameter
 
 
 def MLS_grid(points, data_idx, KNN_num, radius=0.15):
@@ -214,7 +231,7 @@ def MLS_grid(points, data_idx, KNN_num, radius=0.15):
     init_n = U[:, :, 2].squeeze()  # N, C
     nTx = init_n.matmul(torch.tensor([1.0, 0.0, 0.0], device=init_n.device))
     dir = (nTx > 0).float() * 2 - 1
-    init_n = init_n * (dir.unsqueeze(1))  # N C
+    init_n = init_n * (dir.unsqueeze(1))  # N K C
     nTr = (init_n * r).sum(1)  # N
     x_axis = torch.stack((torch.zeros_like(nTr), torch.zeros_like(nTr), nTr / (init_n[:, 2] + eps))).T - r  # N C
     x_axis = x_axis / (x_axis.norm(dim=1, keepdim=True) + eps)
@@ -239,13 +256,13 @@ def MLS_grid(points, data_idx, KNN_num, radius=0.15):
     #    2) + init_n.unsqueeze(1) * predict_f_i.unsqueeze(2)
     # grid generation
     step_num = 4
-    scope_scale = 4
+    scope_scale = 2
     x_min, x_max = x_coordinate.min(1)[0]/scope_scale, x_coordinate.max(1)[0]/scope_scale  # N
     y_min, y_max = y_coordinate.min(1)[0]/scope_scale, y_coordinate.max(1)[0]/scope_scale  # N
     x_step = (x_max - x_min)/step_num
     y_step = (y_max - y_min)/step_num
-    x_grid = torch.stack([x_min + x_step*step for step in range(step_num+1)]).permute(1,0)  # NS
-    y_grid = torch.stack([y_min + y_step*step for step in range(step_num+1)]).permute(1,0)  # NS
+    x_grid = torch.stack([x_min + x_step*step for step in range(step_num+1)]).permute(1, 0)  # NS
+    y_grid = torch.stack([y_min + y_step*step for step in range(step_num+1)]).permute(1, 0)  # NS
     N = x_grid.shape[0]
     x_grid = x_grid.unsqueeze(1).repeat(1, step_num+1, 1).reshape(N, -1)  # N S*S
     y_grid = y_grid.unsqueeze(2).repeat(1, 1, step_num+1).reshape(N, -1)  # N S*S

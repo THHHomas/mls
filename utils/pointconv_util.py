@@ -113,7 +113,7 @@ def knn_point(nsample, xyz, new_xyz, raduis=0.15):
         group_idx: grouped points index, [B, S, nsample]
     """
     sqrdists = square_distance(new_xyz, xyz).squeeze()
-    _, group_idx = torch.topk(sqrdists, nsample, dim = -1, largest=False, sorted=False)
+    _, group_idx = torch.topk(sqrdists, nsample, dim=-1, largest=False, sorted=True)
     return group_idx
 
 def sample_and_group(npoint, nsample, xyz, points, density_scale = None):

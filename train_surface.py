@@ -4,16 +4,18 @@ import torch
 import torch.nn.parallel
 import torch.utils.data
 import torch.nn.functional as F
-from data_utils.ModelNetDataLoader import ModelNetDataLoader, load_data
+from data_utils.ModelNetDataLoader import ModelNetDataLoader, load_data, load_normal_data
 import datetime
 import logging
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+
+from utils.mls import farthest_point_sample, MLS_batch
 from utils.utils import test, save_checkpoint, construct_planes
 from model.pointconv import PointConvDensityClsSsg as PointConvClsSsg
 from learning_based_surface.surfacenet import SurfaceNet, SurfaceNet2
-from utils.mls import MLS, farthest_point_sample, MLS_batch
+
 import h5py
 
 from tensorboardX import SummaryWriter
@@ -30,79 +32,46 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('PointConv')
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
-    parser.add_argument('--epoch',  default=100, type=int, help='number of epoch in training')
-    parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
-    parser.add_argument('--gpu', type=str, default='3', help='specify gpu device')
+    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
+    parser.add_argument('--learning_rate', default=1e-3, type=float, help='learning rate in training')
+    parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
     parser.add_argument('--train_metric', type=str, default=True, help='whether evaluate on training dataset')
     parser.add_argument('--optimizer', type=str, default='SGD', help='optimizer for training')
-    parser.add_argument('--pretrain', type=str, default=None,help='whether use pretrain model')
+    parser.add_argument('--pretrain', type=str, default=None, help='whether use pretrain model')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
+    parser.add_argument('--with_normal', type=bool, default=False, help='whether the input containing point normal')
     parser.add_argument('--model_name', default='pointconv', help='model name')
     return parser.parse_args()
-
-def construct_MLS(points, path, point_nums, phase='train'):
-    data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
-
-    points = torch.from_numpy(points)
-    point_nums = point_nums
-    KNN_nums = [8, 8]
-    for i, point_num in enumerate(point_nums):
-        KNN_num = KNN_nums[i]
-        local_coordinates = []
-        neighbor_lists = []
-        data_idx_lists = []
-        neighbor_grp = data_file.create_group("neighbor"+str(i))
-        coordinate_grp = data_file.create_group("coordinate"+str(i))
-        idx_grp = data_file.create_group("idx"+str(i))
-        new_points =[]
-        print("layer ", i)
-        for idx in range(points.shape[0]):
-            if idx % 100 == 0:
-                print("complete %f" % (float(idx)/float(points.shape[0])))
-            data = points[idx, :, :]
-            data_idx = farthest_point_sample(data.unsqueeze(0), point_num).squeeze().long()
-            filtered_neighbor_list, local_coordinate = MLS(data, data_idx, KNN_num, 0.15*(i+1))
-            local_coordinates.append(local_coordinate)
-            data_idx_lists.append(data_idx)
-            neighbor_lists.append(filtered_neighbor_list)
-
-            data = data[data_idx]
-            new_points.append(data)
-
-        points = torch.stack(new_points)
-        neighbor_lists = torch.stack(neighbor_lists)
-        local_coordinates = torch.stack(local_coordinates)
-        data_idx_lists = torch.stack(data_idx_lists)
-        neighbor_grp.create_dataset('neighbor_lists', data=neighbor_lists)
-        coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
-        idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
 
 
 def construct_MLS_multi(points, path, point_nums, phase='train'):
     data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
 
-    points = torch.from_numpy(points)
+    points = torch.from_numpy(points).float()
     point_nums = point_nums
-    KNN_nums = [32]*len(point_nums)
+    KNN_nums = [16]*len(point_nums)
     for i, point_num in enumerate(point_nums):
         KNN_num = KNN_nums[i]
         local_coordinates = []
         neighbor_lists = []
+        parameters = []
         neighbor_grp = data_file.create_group("neighbor"+str(i))
-        coordinate_grp = data_file.create_group("coordinate"+str(i))
+        # coordinate_grp = data_file.create_group("coordinate"+str(i))
+        # paramters_grp = data_file.create_group("parameters"+str(i))
         idx_grp = data_file.create_group("idx"+str(i))
         new_points =[]
         print("layer ", i)
-        data_idx_lists = farthest_point_sample(points, point_num).long()
+        data_idx_lists = farthest_point_sample(points[:,:,0:3], point_num).long()
         for idx in range(points.shape[0]):
             if idx%100 == 99:
                 print("complete %f"%(float(idx)/float(points.shape[0])))
             data = points[idx, :, :]
             data_idx = data_idx_lists[idx]
 
-            filtered_neighbor_list, local_coordinate = MLS_batch(data, data_idx, KNN_num)
-            local_coordinates.append(local_coordinate)
+            filtered_neighbor_list = MLS_batch(data, data_idx, KNN_num)
+            # local_coordinates.append(local_coordinate)
             # data_idx_lists.append(data_idx)
+            # parameters.append(parameter)
             neighbor_lists.append(filtered_neighbor_list)
 
             data = data[data_idx]
@@ -110,51 +79,18 @@ def construct_MLS_multi(points, path, point_nums, phase='train'):
 
         points = torch.stack(new_points)
         neighbor_lists = torch.stack(neighbor_lists)
-        local_coordinates = torch.stack(local_coordinates)
+        # local_coordinates = torch.stack(local_coordinates)
+        # parameters = torch.stack(parameters)
+        # B, N, _, _ = parameters.shape
+        # parameters = parameters.reshape(B*N, -1)
+        # parameters = (parameters - parameters.mean(0, keepdim=True)) / parameters.var(0, keepdim=True)
+        # parameters = parameters.reshape(B, N, -1)
+
         # data_idx_lists = torch.stack(data_idx_lists)
         neighbor_grp.create_dataset('neighbor_lists', data=neighbor_lists)
-        coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
+        # coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
+        # paramters_grp.create_dataset('parameters', data=parameters)
         idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
-
-def construct_MLS_grid(points, path, point_nums, phase='train'):
-    data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
-
-    points = torch.from_numpy(points)
-    point_nums = point_nums
-    KNN_nums = [12]*len(point_nums)
-    data_idx_file = []
-    for i, point_num in enumerate(point_nums):
-        KNN_num = KNN_nums[i]
-        local_coordinates = []
-        neighbor_lists = []
-        neighbor_grp = data_file.create_group("neighbor"+str(i))
-        coordinate_grp = data_file.create_group("coordinate"+str(i))
-        idx_grp = data_file.create_group("idx"+str(i))
-        new_points =[]
-        print("layer ", i)
-        data_idx_lists = farthest_point_sample(points, point_num).long()
-        for idx in range(points.shape[0]):
-            if idx%100 == 99:
-                print("complete %f"%(float(idx)/float(points.shape[0])))
-            data = points[idx, :, :]
-            data_idx = data_idx_lists[idx]
-
-            local_coordinate = MLS_batch(data, data_idx, KNN_num)
-            local_coordinates.append(local_coordinate)
-
-            data = data[data_idx]
-            new_points.append(data)
-
-
-        points = torch.stack(new_points)
-        local_coordinates = torch.stack(local_coordinates)
-        coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
-        idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
-
-    # get calculated points
-    for i, point_num in enumerate(point_nums.reverse()):
-        ss = 0
-
 
 
 def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
@@ -162,21 +98,24 @@ def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
     local_coordinates = []
     neighbor_lists = []
     data_idx_lists = []
+    parameters_lists = []
     point_nums = point_nums
+    returned_num = 100
     for i, point_num in enumerate(point_nums):
-
         neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
-        coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
+        # coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
+        # parameters_grp = data_file["parameters" + str(i)]["parameters"][:].astype(np.float32)
         idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
-
+        # parameters_lists.append(parameters_grp)
         neighbor_lists.append(neighbor_grp)
-        local_coordinates.append(coordinate_grp)
+        # local_coordinates.append(coordinate_grp)
         data_idx_lists.append(idx_grp)
     neighbor_lists = np.concatenate(neighbor_lists, 1) #([B, N0, content], [B, N1, content], [B, N1, content])
-    local_coordinates = np.concatenate(local_coordinates, 1)
+    # local_coordinates = np.concatenate(local_coordinates, 1)
     data_idx_lists = np.concatenate(data_idx_lists, 1)
+    # parameters_lists = np.concatenate(parameters_lists, 1)
 
-    return torch.from_numpy(local_coordinates), torch.from_numpy(neighbor_lists), torch.from_numpy(data_idx_lists)
+    return torch.from_numpy(neighbor_lists), torch.from_numpy(data_idx_lists)
 
 
 def main(args):
@@ -244,18 +183,18 @@ def main(args):
 
     '''DATA LOADING'''
     logger.info('Load dataset ...')
-    train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
+    train_data, train_label, test_data, test_label = load_normal_data('./data/modelnet40_normal_resampled/')
     '''logger.info('construct_MLS for train data...')
     construct_MLS_multi(train_data, auxiliarypath, classifier.point_num)
     logger.info('construct_MLS for test data...')
     construct_MLS_multi(test_data, auxiliarypath, classifier.point_num, phase='test')'''
 
-    train_local_coordinates, train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
+    train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
     logger.info("The number of training data is: %d",train_data.shape[0])
     logger.info("The number of test data is: %d", test_data.shape[0])
-    trainDataset = ModelNetDataLoader(train_data, train_label, train_local_coordinates, train_neighbor_lists, train_data_idx_lists)
-    test_local_coordinates, test_neighbor_lists, test_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num, phase='test')
-    testDataset = ModelNetDataLoader(test_data, test_label, test_local_coordinates, test_neighbor_lists, test_data_idx_lists)
+    trainDataset = ModelNetDataLoader(train_data, train_label, train_neighbor_lists, train_data_idx_lists)
+    test_neighbor_lists, test_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num, phase='test')
+    testDataset = ModelNetDataLoader(test_data, test_label, test_neighbor_lists, test_data_idx_lists)
     trainDataLoader = torch.utils.data.DataLoader(trainDataset, batch_size=args.batchsize, shuffle=True)
     testDataLoader = torch.utils.data.DataLoader(testDataset, batch_size=args.batchsize, shuffle=False)
 
@@ -268,22 +207,25 @@ def main(args):
 
         scheduler.step()
         losses = 0
+        lc_stds = 0
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
-            points, target, local_coordinates, neighbor_lists, data_idx_lists = data
-            target = target[:, 0]
+            points, target, neighbor_lists, data_idx_lists = data
+            # target = target[:, 0]
             # points = points.transpose(2, 1)
-            points, target, local_coordinates, neighbor_lists, data_idx_lists = \
-                points.cuda(), target.cuda(), local_coordinates.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
+            points, target, neighbor_lists, data_idx_lists = \
+                points[:,:,0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(),  data_idx_lists.cuda()
 
             optimizer.zero_grad()
             classifier = classifier.train()
-            pred = classifier(points, local_coordinates, neighbor_lists, data_idx_lists)
+            pred, lc_std = classifier(points, neighbor_lists, data_idx_lists)
             loss = F.nll_loss(pred, target.long())
-
-            loss.backward()
+            total_loss = loss - 5*lc_std
+            total_loss.backward()
+            # print(classifier.axis_net.fc1.weight.grad)
             optimizer.step()
             global_step += 1
             losses += loss.item()
+            lc_stds += lc_std.item()
 
         if epoch%10 == 9:
             train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
@@ -292,10 +234,9 @@ def main(args):
         writer1.add_scalar('quadratic', losses / (batch_id + 1), global_step=epoch)
         writer2.add_scalar('quadratic', acc, global_step=epoch)
 
-
-        print('\r Loss: %f' % float(losses/(batch_id+1)))
+        print('\r Loss: %f' % float(losses/(batch_id+1)), 'lc_std: %f' % float(lc_stds/(batch_id+1)))
         logger.info('Loss: %.2f', losses/(batch_id+1))
-        if args.train_metric and epoch%10==9:
+        if args.train_metric and epoch % 10 == 9:
             print('Train Accuracy: %f' % train_acc)
             logger.info('Train Accuracy: %f', (train_acc))
         print('\r Test %s: %f   ***  %s: %f' % (blue('Accuracy'),acc, blue('Best Accuracy'),best_tst_accuracy))

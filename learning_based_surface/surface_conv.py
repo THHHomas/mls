@@ -1,8 +1,7 @@
-from utils.mls import MLS
 from torch import nn
 import torch.nn.functional as F
 import torch
-import math
+
 
 class WeightNet(nn.Module):
     def __init__(self, in_channel, out_channel, hidden_len=3):
@@ -77,6 +76,9 @@ def index_points(points, idx):
     Return:
         new_points:, indexed points data, [B, S, C]
     """
+    # if points.shape[1] == idx.shape[1]:
+    #    return points
+
     device = points.device
     B = points.shape[0]
     view_shape = list(idx.shape)
@@ -87,53 +89,45 @@ def index_points(points, idx):
     new_points = points[batch_indices, idx, :]
     return new_points
 
-class SurfaceConv(nn.Module):
-    def __init__(self, npoint, in_channel,  mlp):
-        super(SurfaceConv, self).__init__()
-        weight_channel = mlp[-2]
+
+class AxisConv(nn.Module):
+    def __init__(self, in_channel,  mlp, merge=False):
+        super(AxisConv, self).__init__()
+        self.merge = merge
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         last_channel = in_channel
         for out_channel in mlp:
-            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, [3, 1], padding=[1, 0]))  #
             self.mlp_bns.append(nn.BatchNorm2d(out_channel))
             last_channel = out_channel
+        if merge:
+            self.fc = nn.Linear(16, 1)
 
-        # self.bn_conv = nn.BatchNorm1d(weight_channel * mlp[-1])
-        self.linear = nn.Linear(weight_channel * mlp[-1], mlp[-1])
-        self.bn_linear = nn.BatchNorm1d(mlp[-1])
-        self.in_channel = in_channel
-        self.npoint = npoint
-        self.weightnet = WeightNet(2, weight_channel)
-    def forward(self, xyz, points, local_coordinates, neighbor_lists, data_idx):
+
+    def forward(self, xyz, grouped_points):
         """needs more modification
-            neighbor_lists: B, N, Neighbor_num
+            grouped_points: B C K N
         """
-        B, N, _ = xyz.shape
-        # fps sampling index
-        new_xyz = index_points(xyz, data_idx)
-        if points is not None:
-            points = torch.cat((points, xyz), 2)
-            grouped_points = index_points(points, neighbor_lists).permute(0, 3, 2, 1)
-        else:
-            grouped_points = (local_coordinates + new_xyz.unsqueeze(2)).permute(0, 3, 2, 1)
 
+        if grouped_points is None:
+            grouped_points = xyz
+        else:
+            grouped_points = torch.cat([grouped_points, xyz], 1)
+
+        B, _, K, N = grouped_points.shape
         for i, conv in enumerate(self.mlp_convs):
             bn = self.mlp_bns[i]
+            # fc = self.fcs[i]
+            # fc_bn = self.fcs_bn[i]
+            # grouped_points = F.relu(fc_bn(fc(grouped_points.permute(0,1,3,2).reshape(-1, K))))
+            # grouped_points = grouped_points.reshape(B,-1,N,K).permute(0,1,3,2)
             grouped_points = F.relu(bn(conv(grouped_points)))
-        grouped_points = grouped_points.permute(0, 3, 1, 2)
-
-        local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN
-
-        weights = self.weightnet(local_coordinates[:, 0:2, :, :]).permute(0, 3, 2, 1)
-        new_points = torch.matmul(input=grouped_points, other=weights).view(B, self.npoint, -1)
-        # new_points = self.bn_conv(new_points.permute(0, 2, 1)).permute(0, 2, 1)
-
-        new_points = self.linear(new_points)
-        new_points = self.bn_linear(new_points.permute(0, 2, 1)).permute(0, 2, 1)
-        new_points = F.relu(new_points)
-
-        return new_xyz, new_points
+        if self.merge:
+            # grouped_points = grouped_points.permute(0,3,1,2).reshape(-1, K)
+            # grouped_points = self.fc(grouped_points).squeeze().reshape(B, N, -1)
+            grouped_points = grouped_points.mean(2).squeeze()
+        return grouped_points
 
 
 class SurfaceConvPurity(nn.Module):
@@ -254,6 +248,7 @@ class Merge(nn.Module):
         new_xyz = xyz.mean(dim=1, keepdim=True)
         grouped_xyz = xyz.view(B, 1, N, C) - new_xyz.view(B, 1, 1, C)
         points = torch.cat([grouped_xyz, points.view(B, 1, N, -1)], dim=-1)  # [B, 1, npoint, C+D]
+        # points = points.view(B, 1, N, -1)
         # Conv
         points = points.permute(0, 3, 2, 1)  # [B, C+D, nsample,npoint]
         for i, conv in enumerate(self.mlp_convs):
@@ -263,8 +258,7 @@ class Merge(nn.Module):
         grouped_xyz = grouped_xyz.permute(0, 3, 2, 1)
         weights = self.weightnet(grouped_xyz)
         new_points = torch.matmul(input=points.permute(0, 3, 1, 2), other=weights.permute(0, 3, 2, 1)).view(B,
-                                                                                                                self.npoint,
-                                                                                                                -1)
+                                                                                                      self.npoint, -1)
         new_points = self.linear(new_points)
         new_points = self.bn_linear(new_points.permute(0, 2, 1))
         new_points = F.relu(new_points)

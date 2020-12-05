@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="tianhui@218.76.9.225:6627">
+  <component name="PublishConfigData" autoUpload="Always" serverName="tianhui@111.23.141.78：6626">
     <serverData>
-      <paths name="tianhui@218.76.9.225:6627">
+      <paths name="tianhui@111.23.141.78：6626">
         <serverdata>
           <mappings>
             <mapping deploy="/data/tianhui/pointconv_pytorch" local="$PROJECT_DIR$" />

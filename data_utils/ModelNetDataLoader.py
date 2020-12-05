@@ -20,6 +20,10 @@ def load_h5(h5_filename):
     seg = []
     return (data, label, seg)
 
+def load_normal_data(dir):
+    data_train0, label_train0,Seglabel_train0  = load_h5(dir + 'train.h5')
+    data_test0, label_test0,Seglabel_test0 = load_h5(dir + 'test.h5')
+    return data_train0, label_train0, data_test0, label_test0
 
 def load_data(dir, classification=False):
     data_train0, label_train0,Seglabel_train0  = load_h5(dir + 'ply_data_train0.h5')
@@ -49,11 +53,10 @@ def load_data(dir, classification=False):
         return train_data, train_Seglabel, test_data, test_Seglabel
 
 class ModelNetDataLoader(Dataset):
-    def __init__(self, data, labels, local_coordinates=None, neighbor_lists=None, data_idx_lists=None, rotation = None):
+    def __init__(self, data, labels, neighbor_lists=None, data_idx_lists=None, rotation = None):
         self.data = data
         self.labels = labels
         self.rotation = rotation
-        self.local_coordinates = local_coordinates
         self.neighbor_lists = neighbor_lists
         self.data_idx_lists = data_idx_lists
 
@@ -83,7 +86,7 @@ class ModelNetDataLoader(Dataset):
             pointcloud = self.rotate_point_cloud_by_angle(pointcloud, angle)
             return pointcloud, self.labels[index]
         else:
-            if self.local_coordinates is not None:
-                return self.data[index], self.labels[index], self.local_coordinates[index], self.neighbor_lists[index], self.data_idx_lists[index]
+            if self.neighbor_lists is not None:
+                return self.data[index], self.labels[index], self.neighbor_lists[index], self.data_idx_lists[index]
             else:
                 return self.data[index], self.labels[index]
