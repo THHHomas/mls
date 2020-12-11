@@ -77,17 +77,21 @@ def save_checkpoint(epoch, train_accuracy, test_accuracy, model, optimizer, path
     }
     torch.save(state, savepath)
 
-def test(classifier, loader):
+def test(classifier, loader, normal):
     mean_correct = []
     for j, data in enumerate(loader, 0):
         if len(data)==4:
             points, target, neighbor_lists, data_idx_lists = data
             # target = target[:, 0]
-            points, target, neighbor_lists, data_idx_lists = points[:,:,0:3].float().cuda(), \
-            target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
+            if normal:
+                points, target, neighbor_lists, data_idx_lists = \
+                    points.float().cuda(), target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
+            else:
+                points, target, neighbor_lists, data_idx_lists = \
+                    points[:, :, 0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
             # classifier = model.eval()
             with torch.no_grad():
-                pred, _ = classifier(points, neighbor_lists, data_idx_lists)
+                pred, _, _ = classifier(points, neighbor_lists, data_idx_lists)
         elif len(data)==2:
             points, target = data
             points = points.permute(0, 2, 1)
@@ -95,7 +99,7 @@ def test(classifier, loader):
             points, target,  = points.cuda(), target.cuda()
             # classifier = model.eval()
             with torch.no_grad():
-                pred, _ = classifier(points)
+                pred, _, _ = classifier(points)
 
         pred_choice = pred.data.max(1)[1]
         correct = pred_choice.eq(target.long().data).cpu().sum()

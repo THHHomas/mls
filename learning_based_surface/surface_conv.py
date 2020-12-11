@@ -1,5 +1,6 @@
 from torch import nn
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm
 import torch
 
 
@@ -11,7 +12,7 @@ class WeightNet(nn.Module):
 
         for i in range(hidden_len):
             hidden_unit.append(out_channel//(2**int(round(steps*(hidden_len-i)))))'''
-        hidden_unit = [4, 8]
+        hidden_unit = [16, 16]
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         if hidden_unit is None or len(hidden_unit) == 0:
@@ -96,13 +97,14 @@ class AxisConv(nn.Module):
         self.merge = merge
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
+        self.fcs = nn.ModuleList()
         last_channel = in_channel
         for out_channel in mlp:
-            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, [3, 1], padding=[1, 0]))  #
-            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            self.mlp_convs.append(weight_norm(nn.Conv2d(last_channel, out_channel, [3, 1], padding=[1, 0])))  #
+            # self.mlp_bns.append(nn.BatchNorm2d(out_channel))
             last_channel = out_channel
         if merge:
-            self.fc = nn.Linear(16, 1)
+            self.fc = nn.Linear(24, 1)
 
 
     def forward(self, xyz, grouped_points):
@@ -117,16 +119,15 @@ class AxisConv(nn.Module):
 
         B, _, K, N = grouped_points.shape
         for i, conv in enumerate(self.mlp_convs):
-            bn = self.mlp_bns[i]
+            # bn = self.mlp_bns[i]
             # fc = self.fcs[i]
-            # fc_bn = self.fcs_bn[i]
-            # grouped_points = F.relu(fc_bn(fc(grouped_points.permute(0,1,3,2).reshape(-1, K))))
+            # grouped_points = F.relu(fc(grouped_points.permute(0,1,3,2).reshape(-1, K)))
             # grouped_points = grouped_points.reshape(B,-1,N,K).permute(0,1,3,2)
-            grouped_points = F.relu(bn(conv(grouped_points)))
+            grouped_points = F.relu(conv(grouped_points))
         if self.merge:
-            # grouped_points = grouped_points.permute(0,3,1,2).reshape(-1, K)
-            # grouped_points = self.fc(grouped_points).squeeze().reshape(B, N, -1)
-            grouped_points = grouped_points.mean(2).squeeze()
+            grouped_points = grouped_points.permute(0,3,1,2).reshape(-1, K)
+            grouped_points = self.fc(grouped_points).squeeze().reshape(B, N, -1)
+            # grouped_points = grouped_points.mean(2).squeeze()
         return grouped_points
 
 

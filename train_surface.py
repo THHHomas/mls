@@ -14,7 +14,7 @@ from tqdm import tqdm
 from utils.mls import farthest_point_sample, MLS_batch
 from utils.utils import test, save_checkpoint, construct_planes
 from model.pointconv import PointConvDensityClsSsg as PointConvClsSsg
-from learning_based_surface.surfacenet import SurfaceNet, SurfaceNet2
+from learning_based_surface.surfacenet import SurfaceNet
 
 import h5py
 
@@ -49,7 +49,7 @@ def construct_MLS_multi(points, path, point_nums, phase='train'):
 
     points = torch.from_numpy(points).float()
     point_nums = point_nums
-    KNN_nums = [16]*len(point_nums)
+    KNN_nums = [24]*len(point_nums)
     for i, point_num in enumerate(point_nums):
         KNN_num = KNN_nums[i]
         local_coordinates = []
@@ -154,7 +154,7 @@ def main(args):
 
     '''MODEL LOADING'''
     num_class = 40
-    classifier = SurfaceNet(num_class).cuda()
+    classifier = SurfaceNet(num_class, normal=args.with_normal).cuda()
     if args.pretrain is not None:
         print('Use pretrain model...')
         logger.info('Use pretrain model')
@@ -208,33 +208,41 @@ def main(args):
         scheduler.step()
         losses = 0
         lc_stds = 0
+        lc_consistences = 0
+        if epoch == 2:
+            ccc = -1
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
             points, target, neighbor_lists, data_idx_lists = data
             # target = target[:, 0]
             # points = points.transpose(2, 1)
-            points, target, neighbor_lists, data_idx_lists = \
-                points[:,:,0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(),  data_idx_lists.cuda()
+            if args.with_normal:
+                points, target, neighbor_lists, data_idx_lists = \
+                    points.float().cuda(), target.cuda(), neighbor_lists.cuda(),  data_idx_lists.cuda()
+            else:
+                points, target, neighbor_lists, data_idx_lists = \
+                    points[:,:,0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
 
             optimizer.zero_grad()
             classifier = classifier.train()
-            pred, lc_std = classifier(points, neighbor_lists, data_idx_lists)
+            pred, lc_std, lc_consistence = classifier(points, neighbor_lists, data_idx_lists)
             loss = F.nll_loss(pred, target.long())
-            total_loss = loss - 5*lc_std
+            total_loss = loss - lc_std - lc_consistence
             total_loss.backward()
             # print(classifier.axis_net.fc1.weight.grad)
             optimizer.step()
             global_step += 1
             losses += loss.item()
             lc_stds += lc_std.item()
+            lc_consistences += lc_consistence.item()
 
         if epoch%10 == 9:
-            train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
+            train_acc = test(classifier.eval(), trainDataLoader, args.with_normal) if args.train_metric else None
             writer3.add_scalar('quadratic', train_acc, global_step=epoch)
-        acc = test(classifier.eval(), testDataLoader)
+        acc = test(classifier.eval(), testDataLoader, args.with_normal)
         writer1.add_scalar('quadratic', losses / (batch_id + 1), global_step=epoch)
         writer2.add_scalar('quadratic', acc, global_step=epoch)
 
-        print('\r Loss: %f' % float(losses/(batch_id+1)), 'lc_std: %f' % float(lc_stds/(batch_id+1)))
+        print('\r Loss: %f' % float(losses/(batch_id+1)), 'lc_std: %f' % float(lc_stds/(batch_id+1)), 'lc_consistences: %f' % float(lc_consistences/(batch_id+1)))
         logger.info('Loss: %.2f', losses/(batch_id+1))
         if args.train_metric and epoch % 10 == 9:
             print('Train Accuracy: %f' % train_acc)
