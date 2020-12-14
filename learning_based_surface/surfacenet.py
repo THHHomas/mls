@@ -14,7 +14,7 @@ from torch.nn.utils import weight_norm
 
 # [512, 256, 128, 64, 32, 16] auxiliary6
 # [512, 128, 32] auxiliary3
-
+KNN_NUM = 15
 
 def lc_std_loss(lc):
     """
@@ -123,7 +123,7 @@ class AxisNet(nn.Module):
         self.normal = normal
         self.sa1 = AxisConv(in_channel=3, mlp=[4 * scale, 8 * scale])
         self.sa2 = AxisConv(in_channel=8 * scale + 3, mlp=[12 * scale, 16 * scale])
-        self.sa3 = AxisConv(in_channel=16 * scale + 3, mlp=[24 * scale, 32 * scale], merge=True)
+        self.sa3 = AxisConv(in_channel=16 * scale + 3, mlp=[24 * scale, 32 * scale], merge=True, KNN_num=KNN_NUM)
         self.fc1 = weight_norm(nn.Linear(32 * scale, 16 * scale))
         self.bn1 = nn.BatchNorm1d(16 * scale)
         self.drop1 = nn.Dropout(0.4)
@@ -239,21 +239,26 @@ class SurfaceNet(nn.Module):
         cid = 0
         current_xyz = xyz
         for idx, point_num in enumerate(self.point_num):
-            current_xyz = index_points(current_xyz, data_idxes[:, cid:cid + point_num].squeeze())
-            x_axis, y_axis, z_axis = self.axis_net(current_xyz, neighbors[:, cid:cid + point_num, :].squeeze())  # BNC
+            # random choose neighbors
+            random_index = torch.from_numpy(np.concatenate([np.array([0]), np.random.choice(32, KNN_NUM, replace=False)], 0)).to(xyz.device).long()
+            NBs = neighbors[:, cid:cid + point_num, random_index].squeeze()
+            DIs = data_idxes[:, cid:cid + point_num].squeeze()
+
+            current_xyz = index_points(current_xyz, DIs)
+            x_axis, y_axis, z_axis = self.axis_net(current_xyz, NBs)  # BNC
             # print(self.axis_net.fc1.weight)
             axis = torch.stack([x_axis, y_axis, z_axis]).permute(1, 2, 3, 0)  # BNC3
-            grouped_xyz = index_points(current_xyz[:, :, 0:3], neighbors[:, cid:cid + point_num, :].squeeze())
+            grouped_xyz = index_points(current_xyz[:, :, 0:3], NBs)
             grouped_xyz = grouped_xyz - current_xyz[:, :, 0:3].unsqueeze(2)  # BNKC
             lc = torch.matmul(grouped_xyz, axis)  # BNKC
             local_coordinates_layer.append(lc)
 
-            lc_consistence += lc_consistence_loss(axis, neighbors[:, cid:cid + point_num, :].squeeze())
+            lc_consistence += lc_consistence_loss(axis, NBs)
             lc_std += lc_std_loss(lc)
 
             # local_coordinates_layer.append(local_coordinates[:, cid:cid+point_num,:, :].squeeze())
-            neighbors_layer.append(neighbors[:, cid:cid + point_num, :].squeeze())
-            data_idxes_layer.append(data_idxes[:, cid:cid + point_num].squeeze())
+            neighbors_layer.append(NBs)
+            data_idxes_layer.append(DIs)
             cid += point_num
         # 2048 -> 2048
 
@@ -263,10 +268,10 @@ class SurfaceNet(nn.Module):
                                      neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
         l0_xyz, l0_points = self.sa02(l0_xyz, l0_points, local_coordinates_layer[0],
                                       neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
-        # l0_xyz, l0_points = self.sa03(l0_xyz, l0_points, local_coordinates_layer[0],
-        #                               neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
-        # l0_xyz, l0_points = self.sa04(l0_xyz, l0_points, local_coordinates_layer[0],
-        #                               neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
+        l0_xyz, l0_points = self.sa03(l0_xyz, l0_points, local_coordinates_layer[0],
+                                       neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
+        l0_xyz, l0_points = self.sa04(l0_xyz, l0_points, local_coordinates_layer[0],
+                                       neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
         # res0 = F.relu(self.bn_res0(self.fc_res0(l0_points_res).permute(0, 2, 1)).permute(0, 2, 1))
         # l0_points = l0_points + l0_points_res
 
@@ -276,10 +281,10 @@ class SurfaceNet(nn.Module):
         # 512 -> 512
         l2_xyz, l2_points = self.sa12(l1_xyz, l1_points, local_coordinates_layer[2],
                                       neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
-        # l2_xyz, l2_points = self.sa13(l2_xyz, l2_points, local_coordinates_layer[2],
-        #                               neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
-        # l2_xyz, l2_points = self.sa14(l2_xyz, l2_points, local_coordinates_layer[2],
-        #                                 neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
+        l2_xyz, l2_points = self.sa13(l2_xyz, l2_points, local_coordinates_layer[2],
+                                       neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
+        l2_xyz, l2_points = self.sa14(l2_xyz, l2_points, local_coordinates_layer[2],
+                                         neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
         # res1 = F.relu(self.bn_res1(self.fc_res1(l1_points).permute(0, 2, 1)).permute(0, 2, 1))
         # l2_points = res1 + l2_points
 
@@ -302,7 +307,7 @@ class SurfaceNet(nn.Module):
         x = l4_points.view(B, self.scale * 128)
         # x = l2_points.mean(1)
         x = self.drop1(F.relu(self.fc1(x)))
-        x = self.drop2(F.relu(self.fc2(x)))
+        # x = self.drop2(F.relu(self.fc2(x)))
         x = self.fc3(x)
         x = F.log_softmax(x, -1)
 

@@ -5,14 +5,14 @@ import torch
 
 
 class WeightNet(nn.Module):
-    def __init__(self, in_channel, out_channel, hidden_len=3):
+    def __init__(self, in_channel, out_channel, hidden_len=2):
         super(WeightNet, self).__init__()
         '''hidden_unit = []
         steps = (math.log(out_channel) - 4)/hidden_len
 
         for i in range(hidden_len):
             hidden_unit.append(out_channel//(2**int(round(steps*(hidden_len-i)))))'''
-        hidden_unit = [16, 16]
+        hidden_unit = [4, 8]
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
         if hidden_unit is None or len(hidden_unit) == 0:
@@ -92,7 +92,7 @@ def index_points(points, idx):
 
 
 class AxisConv(nn.Module):
-    def __init__(self, in_channel,  mlp, merge=False):
+    def __init__(self, in_channel,  mlp, merge=False, KNN_num=1):
         super(AxisConv, self).__init__()
         self.merge = merge
         self.mlp_convs = nn.ModuleList()
@@ -104,7 +104,7 @@ class AxisConv(nn.Module):
             # self.mlp_bns.append(nn.BatchNorm2d(out_channel))
             last_channel = out_channel
         if merge:
-            self.fc = nn.Linear(24, 1)
+            self.fc = nn.Linear(KNN_num+1, 1)
 
 
     def forward(self, xyz, grouped_points):

@@ -32,7 +32,7 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('PointConv')
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
-    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=100, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=1e-3, type=float, help='learning rate in training')
     parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
     parser.add_argument('--train_metric', type=str, default=True, help='whether evaluate on training dataset')
@@ -49,7 +49,7 @@ def construct_MLS_multi(points, path, point_nums, phase='train'):
 
     points = torch.from_numpy(points).float()
     point_nums = point_nums
-    KNN_nums = [24]*len(point_nums)
+    KNN_nums = [32]*len(point_nums)
     for i, point_num in enumerate(point_nums):
         KNN_num = KNN_nums[i]
         local_coordinates = []

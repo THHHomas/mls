@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch
 from torch.nn.utils import weight_norm
 import math
+import numpy as np
 from torch_scatter import scatter_mean, scatter_add
 from learning_based_surface.surface_conv import WeightNet
 
@@ -267,6 +268,7 @@ class SurfaceRotateConv(nn.Module):
             grouped_points = torch.cat([local_coordinates, grouped_points], 3).permute(0, 3, 2, 1)  # [:,:,:,2].unsqueeze(3)
         else:
             # K = local_coordinates.shape[2]
+
             grouped_points = torch.cat((local_coordinates, new_xyz.unsqueeze(2).repeat(1,1,local_coordinates.shape[2],1)), 3).permute(0, 3, 2, 1) #index_points(xyz, neighbor_lists).permute(0, 3, 2, 1)  #
 
         grouped_points = grouped_points.permute(0, 3, 1, 2)  # BNCK
