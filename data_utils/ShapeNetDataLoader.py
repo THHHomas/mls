@@ -34,6 +34,7 @@ class PartNormalDataset(Dataset):
         # print(self.cat)
 
         self.meta = {}
+        self.meta2 = {}
         with open(os.path.join(self.root, 'train_test_split', 'shuffled_train_file_list.json'), 'r') as f:
             train_ids = set([str(d.split('/')[2]) for d in json.load(f)])
         with open(os.path.join(self.root, 'train_test_split', 'shuffled_val_file_list.json'), 'r') as f:
@@ -43,7 +44,8 @@ class PartNormalDataset(Dataset):
         for item in self.cat:
             # print('category', item)
             self.meta[item] = []
-            dir_point = os.path.join(self.root, self.cat[item])
+            self.meta2[item] = []
+            dir_point = os.path.join(self.root, self.cat[item], 'points')
             fns = sorted(os.listdir(dir_point))
             # print(fns[0][0:-4])
             if split == 'trainval':
@@ -61,12 +63,16 @@ class PartNormalDataset(Dataset):
             # print(os.path.basename(fns))
             for fn in fns:
                 token = (os.path.splitext(os.path.basename(fn))[0])
-                self.meta[item].append(os.path.join(dir_point, token + '.txt'))
+                self.meta[item].append(os.path.join(dir_point, token + '.pts'))
+                self.meta2[item].append(os.path.join(os.path.join(self.root, self.cat[item], 'points_label'), token + '.seg'))
 
         self.datapath = []
+        self.segpath = []
         for item in self.cat:
             for fn in self.meta[item]:
                 self.datapath.append((item, fn))
+            for fn2 in self.meta2[item]:
+                self.segpath.append((item, fn2))
 
         self.classes = {}
         for i in self.cat.keys():
@@ -85,13 +91,27 @@ class PartNormalDataset(Dataset):
         self.cache = {}  # from index to (point_set, cls, seg) tuple
         self.cache_size = 20000
 
+        self.datatuple = []
+        for idx, fn in enumerate(self.datapath):
+            data = np.loadtxt(fn[1]).astype(np.float32)
+            cls = self.classes[fn[0]]
+            seg = np.loadtxt(self.segpath[idx][1]).astype(np.int32)
+            data[:, 0:3] = pc_normalize(data[:, 0:3])
+            choice = np.random.choice(len(seg), self.npoints, replace=True)
+            data = data[choice, :]
+            seg = seg[choice]
+            self.datatuple.append((data, cls, seg))
+        sss = 0
 
     def __getitem__(self, index):
+        point_set, cls, seg = self.datatuple[index]
+
         if index in self.cache:
             ppoint_set, cls, seg = self.cache[index]
         else:
             fn = self.datapath[index]
-            cat = self.datapath[index][0]
+            fn2 = self.segpath[index]
+            cat = fn[0]
             cls = self.classes[cat]
             cls = np.array([cls]).astype(np.int32)
             data = np.loadtxt(fn[1]).astype(np.float32)
@@ -99,7 +119,8 @@ class PartNormalDataset(Dataset):
                 point_set = data[:, 0:3]
             else:
                 point_set = data[:, 0:6]
-            seg = data[:, -1].astype(np.int32)
+            seg = np.loadtxt(fn2[1]).astype(np.int32)
+            # seg = data[:, -1].astype(np.int32)
             if len(self.cache) < self.cache_size:
                 self.cache[index] = (point_set, cls, seg)
         point_set[:, 0:3] = pc_normalize(point_set[:, 0:3])

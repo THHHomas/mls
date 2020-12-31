@@ -2,6 +2,8 @@ from utils.pointconv_util import knn_point
 import numpy as np
 import torch
 from time import time
+import h5py
+import os
 
 import matplotlib.pyplot as plt
 from scipy.spatial import KDTree as kdtree
@@ -9,6 +11,34 @@ from mpl_toolkits.mplot3d import Axes3D
 
 eps = 1e-10
 
+
+def svd_points(data, normal):
+    B, N, K, C = data.shape
+    data = data.reshape(B*N, K, C)
+    normal = normal.reshape(B*N, -1)
+    center_data = data[:, 0, :].squeeze()
+    line = center_data/center_data.norm(dim=1, keepdim=True)
+    x_axis = torch.cross(normal, line)
+    x_axis = x_axis/x_axis.norm(dim=1, keepdim=True)
+    y_axis = torch.cross(normal, x_axis)
+    axis = torch.stack([x_axis, y_axis, normal]).permute(1, 2, 0)  # N, C, 3
+    new_xyz = torch.matmul(data, axis)  # BN K 3
+
+    xy = new_xyz[:, :, 0:2]
+    z = new_xyz[:, :, 2]
+    A = torch.matmul(xy.permute(0,2,1), xy)
+
+    E, U = torch.symeig(A, eigenvectors=True)  # U->BCC
+    new_x = U[:, :, 0]
+    new_y = U[:, :, 1]
+    x_axis_rotate = new_x[:, 0].unsqueeze(1)*x_axis + new_x[:, 1].unsqueeze(1)*y_axis
+    # y_axis_rotate = new_y[:, 0].unsqueeze(1)*x_axis + new_y[:, 1].unsqueeze(1)*y_axis
+    y_axis_rotate = torch.cross(normal, x_axis_rotate)
+    axis = torch.stack([x_axis_rotate, y_axis_rotate, normal]).permute(1, 2, 0)
+    # new_point = torch.matmul(xy, U)
+    # new_point = torch.cat([new_point, z.unsqueeze(2)], 2)
+    # new_point = new_point.reshape(B, N, K, C)
+    return axis
 
 def visualize(x_coordinate, y_coordinate, f_i, parameter):
     steps = 20
@@ -156,12 +186,20 @@ def MLS(points, data_idx, KNN_num, radius=0.15):
 
 def MLS_batch(points, data_idx, KNN_num, radius=0.15):
     start_time = time()
-    origin_points = points[:, 3:]
-    points = points[:, 0:3]
-    points = points[data_idx]
-    origin_points = origin_points[data_idx]
-    points = points.unsqueeze(0)
-    neighbor_lists = knn_point(KNN_num, points, points).squeeze()
+    normal = points[:, 3:]
+    xyz = points[:, 0:3].unsqueeze(0)
+    neighbor_lists = knn_point(KNN_num, xyz, xyz).unsqueeze(0)
+    neighbor_lists = neighbor_lists[:, data_idx, :]
+    normal = normal[data_idx].unsqueeze(0)
+    # points = points.unsqueeze(0)
+    # U, S, V = torch.svd(points.permute(0,2,1))
+    # x_axis, y_axis, z_axis = U[:, 0], U[:, 1], U[:, 2]
+    # new_point = torch.matmul(points, U)
+
+    grouped_points = index_points(xyz, neighbor_lists)
+    # grouped_normal = index_points(normal, neighbor_lists)
+    U = svd_points(grouped_points, normal).squeeze()
+
     '''points = points.squeeze()
 
     r = points  # NC
@@ -211,7 +249,7 @@ def MLS_batch(points, data_idx, KNN_num, radius=0.15):
     #    2) + init_n.unsqueeze(1) * predict_f_i.unsqueeze(2)
     # for i in range(10):
     #    visualize(x_coordinate[i], y_coordinate[i], predict_f_i[i], parameter[i])'''
-    return neighbor_lists  # , local_coordinate, parameter
+    return neighbor_lists, U
 
 
 def MLS_grid(points, data_idx, KNN_num, radius=0.15):
@@ -325,6 +363,87 @@ def index_points(points, idx):
     batch_indices = torch.arange(B, dtype=torch.long).to(device).view(view_shape).repeat(repeat_shape)
     new_points = points[batch_indices, idx, :]
     return new_points
+
+
+
+
+def construct_MLS_multi(points, path, point_nums, phase='train'):
+    data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
+    points = torch.from_numpy(points).float()
+    point_nums = point_nums
+    KNN_nums = [32]*len(point_nums)
+    for i, point_num in enumerate(point_nums):
+        KNN_num = KNN_nums[i]
+        local_axises = []
+        neighbor_lists = []
+        parameters = []
+        neighbor_grp = data_file.create_group("neighbor"+str(i))
+        axis_grp = data_file.create_group("axis"+str(i))
+        # coordinate_grp = data_file.create_group("coordinate"+str(i))
+        # paramters_grp = data_file.create_group("parameters"+str(i))
+        idx_grp = data_file.create_group("idx"+str(i))
+        new_points =[]
+        print("layer ", i)
+        data_idx_lists = farthest_point_sample(points[:,:,0:3], point_num).long()
+        for idx in range(points.shape[0]):
+            if idx%100 == 99:
+                print("complete %f"%(float(idx)/float(points.shape[0])))
+            data = points[idx, :, :]
+            data_idx = data_idx_lists[idx]
+
+            filtered_neighbor_list, local_axis = MLS_batch(data, data_idx, KNN_num)
+            # local_coordinates.append(local_coordinate)
+            # data_idx_lists.append(data_idx)
+            # parameters.append(parameter)
+            neighbor_lists.append(filtered_neighbor_list)
+            local_axises.append(local_axis)
+            data = data[data_idx]
+            new_points.append(data)
+
+        points = torch.stack(new_points)
+        neighbor_lists = torch.stack(neighbor_lists)
+        local_axises = torch.stack(local_axises)
+        # local_coordinates = torch.stack(local_coordinates)
+        # parameters = torch.stack(parameters)
+        # B, N, _, _ = parameters.shape
+        # parameters = parameters.reshape(B*N, -1)
+        # parameters = (parameters - parameters.mean(0, keepdim=True)) / parameters.var(0, keepdim=True)
+        # parameters = parameters.reshape(B, N, -1)
+
+        # data_idx_lists = torch.stack(data_idx_lists)
+        neighbor_grp.create_dataset('neighbor_lists', data=neighbor_lists)
+        axis_grp.create_dataset('local_axises', data=local_axises)
+        # coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
+        # paramters_grp.create_dataset('parameters', data=parameters)
+        idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
+
+
+def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
+    data_file = h5py.File(os.path.join(auxiliarypath, phase + '.h5'), 'r')
+    local_axises = []
+    neighbor_lists = []
+    data_idx_lists = []
+    parameters_lists = []
+    point_nums = point_nums
+    returned_num = 100
+    for i, point_num in enumerate(point_nums):
+        neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
+        aixs_grp = data_file["axis"+str(i)]["local_axises"][:].astype(np.float32)
+        # coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
+        # parameters_grp = data_file["parameters" + str(i)]["parameters"][:].astype(np.float32)
+        idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
+        # parameters_lists.append(parameters_grp)
+        neighbor_lists.append(neighbor_grp.squeeze())
+        local_axises.append(aixs_grp)
+        # local_coordinates.append(coordinate_grp)
+        data_idx_lists.append(idx_grp)
+    neighbor_lists = np.concatenate(neighbor_lists, 1) #([B, N0, content], [B, N1, content], [B, N1, content])
+    local_axises = np.concatenate(local_axises, 1)
+    data_idx_lists = np.concatenate(data_idx_lists, 1)
+    # parameters_lists = np.concatenate(parameters_lists, 1)
+
+    return torch.from_numpy(neighbor_lists), torch.from_numpy(data_idx_lists), torch.from_numpy(local_axises)
+
 
 
 if __name__ == "__main__":

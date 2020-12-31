@@ -7,6 +7,24 @@ import numpy as np
 from torch_scatter import scatter_mean, scatter_add
 from learning_based_surface.surface_conv import WeightNet
 
+
+def cartesian2polar(xyz):
+    #  B, N, K, C or B N C
+    len4 = False
+    B, N, C = xyz.shape[0], xyz.shape[1], xyz.shape[-1]
+    if len(xyz.shape) == 4:
+        xyz = xyz.reshape(B, -1, C)
+        len4 = True
+    ro = xyz.norm(dim=2)
+    theta = torch.atan(xyz[:,:,1]/(xyz[:,:,0]+1e-9))
+    phi = torch.acos(xyz[:,:,2]/(ro+1e-9))
+    sphere = torch.stack([ro, theta, phi]).permute(1,2,0)
+
+    if len4:
+        sphere = sphere.reshape(B, N, -1, C)
+    return sphere
+
+
 def index_points(points, idx):
     """
     Input:
@@ -26,9 +44,9 @@ def index_points(points, idx):
     return new_points
 
 
-def cut(x, upbound):
+def cut(x, upbound=100000, lowbound=-100000):
     new_x = -F.relu(-x+upbound)+upbound
-    # new_x = F.relu(x-lowbound)+lowbound
+    new_x = F.relu(new_x-lowbound)+lowbound
     return new_x
 
 
@@ -40,7 +58,7 @@ def circle_conv(local_coordinate, feature, radius=0.1, partition_num=5):
     B, N, K, C = feature.shape
     result = torch.zeros((B, N, partition_num, C), device=feature.device, dtype=feature.dtype)
     distance = local_coordinate[:, :, :, 0:2].norm(dim=3)
-    distance = cut(distance/radius, 0.99)
+    distance = cut(distance/radius, upbound=0.99)
     distance = (distance*partition_num).floor().long()
     # result = scatter_mean(feature, distance.unsqueeze(3).repeat(1,1,1,C), dim=2, dim_size=partition_num)
     result.scatter_add_(2, distance.unsqueeze(3).repeat(1,1,1,C), feature)
@@ -113,7 +131,6 @@ def get_feature(indexes, weight, feature, partition_num):
     B, N, K, C = feature.shape
     grid_feature = torch.zeros((B, N, partition_num ** 2 + 1, C), device=feature.device, dtype=feature.dtype)
     grid_feature_norm = torch.zeros((B, N, partition_num ** 2 + 1), device=feature.device, dtype=feature.dtype)
-    grid_feature_temp = torch.zeros((B, N, partition_num ** 2 + 1, C), device=feature.device, dtype=feature.dtype)
 
     # grid_feature_norm.scatter_add_(2, indexes[0], weight[0])  #BNG
     # grid_feature.scatter_add_(2, indexes[0].unsqueeze(3).repeat(1, 1, 1, C), feature.repeat(1, 1, 4, 1))  #BNGC
@@ -239,7 +256,7 @@ class RotateConv(torch.nn.Module):
 
 
 class SurfaceRotateConv(nn.Module):
-    def __init__(self, npoint, in_channel, out_channel, radius, partition_num=5):
+    def __init__(self, npoint, in_channel, out_channel, radius, partition_num=5, global_input=False, normal=False):
         super(SurfaceRotateConv, self).__init__()
         self.out_channel = out_channel
         self.in_channel = in_channel
@@ -247,37 +264,76 @@ class SurfaceRotateConv(nn.Module):
         self.partition_num = partition_num
         self.conv_linear = weight_norm(RotateConv(in_channel, partition_num, out_channel))
         # self.conv_bn = nn.BatchNorm1d(out_channel)
-        # self.linear = nn.Linear(out_channel, out_channel)
+        self.linear = weight_norm(nn.Linear(out_channel, out_channel))
         # self.bn_linear = nn.BatchNorm1d(out_channel)
         self.radius = radius
+        self.global_input = global_input
+        self.normal = normal
+
+        self.mlp_convs = nn.ModuleList()
+        self.mlp_bns = nn.ModuleList()
+        last_channel = in_channel
+        for out_channel in [out_channel]*2:
+            self.mlp_convs.append(nn.Conv2d(last_channel, out_channel, 1))
+            self.mlp_bns.append(nn.BatchNorm2d(out_channel))
+            last_channel = out_channel
 
 
     def forward(self, xyz, points, local_coordinates, neighbor_lists, parameter_list,  data_idx):
         """needs more modification
             neighbor_lists: B, N, Neighbor_num
         """
-        B, N, _ = xyz.shape
+        B, N, K, _ = local_coordinates.shape
         new_xyz = index_points(xyz, data_idx)
         # fps sampling index
         # parameter_list = parameter_list.squeeze()
         # xyz = torch.cat((xyz, parameter_list), 2)
+        if self.normal==False:
+            xyz = xyz[:,:,0:3]
+        else:
+            normal = xyz[:, :, 3:]
+            xyz = xyz[:,:,0:3]
+            grouped_normal = index_points(normal, neighbor_lists)
 
+        grouped_xyz = index_points(xyz, neighbor_lists)
         if points is not None:
             # points = torch.cat((points, xyz), 2)
             grouped_points = index_points(points, neighbor_lists)
-            grouped_points = torch.cat([local_coordinates, grouped_points], 3).permute(0, 3, 2, 1)  # [:,:,:,2].unsqueeze(3)
+            if self.global_input:
+                if self.normal:
+                    local_input = torch.cat([grouped_normal, local_coordinates], 3)
+                else:
+                    local_input = local_coordinates
+                grouped_points = torch.cat([local_input, grouped_points], 3)
+            else:
+                if self.normal:
+                    local_input = torch.cat([grouped_normal, local_coordinates], 3)
+                else:
+                    local_input = local_coordinates
+                grouped_points = torch.cat([grouped_xyz, local_input, grouped_points], 3)
         else:
-            # K = local_coordinates.shape[2]
-
-            grouped_points = torch.cat((local_coordinates, new_xyz.unsqueeze(2).repeat(1,1,local_coordinates.shape[2],1)), 3).permute(0, 3, 2, 1) #index_points(xyz, neighbor_lists).permute(0, 3, 2, 1)  #
-
-        grouped_points = grouped_points.permute(0, 3, 1, 2)  # BNCK
+            if self.global_input:
+                if self.normal:
+                    grouped_points = torch.cat([grouped_xyz, grouped_normal], 3)
+                else:
+                    grouped_points = grouped_xyz  # torch.cat([grouped_xyz], 3)
+            else:
+                if self.normal:
+                    grouped_points = torch.cat([grouped_xyz, grouped_normal, local_coordinates], 3)
+                else:
+                    grouped_points = torch.cat([grouped_xyz, local_coordinates], 3)
 
         local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3)  # .permute(0, 3, 2, 1)  # BNKC
 
         # grid conv
+        '''grouped_points = grouped_points.permute(0, 3, 2, 1)
+        for i, conv in enumerate(self.mlp_convs):
+            bn = self.mlp_bns[i]
+            grouped_points = F.relu(bn(conv(grouped_points)))
+        grouped_points = grouped_points.permute(0, 3, 2, 1)'''
+
         index, weight = get_index(local_coordinates, self.partition_num, radius=self.radius)  # BNG
-        feature = get_feature(index, weight, grouped_points.permute(0, 1, 3, 2), self.partition_num)  # BNKC
+        feature = get_feature(index, weight, grouped_points, self.partition_num)  # BNKC
 
         # circle conv
         # feature = circle_conv(local_coordinates, grouped_points, radius=self.radius, partition_num=self.partition_num)
@@ -287,7 +343,7 @@ class SurfaceRotateConv(nn.Module):
         new_points = self.conv_linear(feature)
         new_points = F.relu(new_points).view(B, self.npoint, -1)
 
-        # new_points = self.linear(new_points)
+        new_points = F.relu(self.linear(new_points))
         # new_points = F.relu(self.bn_linear(new_points.permute(0, 2, 1))).permute(0, 2, 1)
         '''
         local_coordinates = local_coordinates.reshape(B, self.npoint, -1, 3).permute(0, 3, 2, 1)  # BCKN

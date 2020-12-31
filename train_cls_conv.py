@@ -18,9 +18,9 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('PointConv')
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
-    parser.add_argument('--epoch',  default=400, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=0.001, type=float, help='learning rate in training')
-    parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
+    parser.add_argument('--gpu', type=str, default='1', help='specify gpu device')
     parser.add_argument('--train_metric', type=str, default=False, help='whether evaluate on training dataset')
     parser.add_argument('--optimizer', type=str, default='SGD', help='optimizer for training')
     parser.add_argument('--pretrain', type=str, default=None,help='whether use pretrain model')
@@ -119,9 +119,8 @@ def main(args):
             optimizer.step()
             global_step += 1
 
-        train_acc = test(classifier.eval(), trainDataLoader) if args.train_metric else None
-        acc = test(classifier, testDataLoader)
-
+        train_acc = test(classifier.eval(), trainDataLoader, False) if args.train_metric else None
+        acc = test(classifier, testDataLoader, False)
 
         print('\r Loss: %f' % loss.data)
         logger.info('Loss: %.2f', loss.data)

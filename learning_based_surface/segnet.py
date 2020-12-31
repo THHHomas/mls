@@ -4,7 +4,6 @@ Author: Wenxuan Wu
 Date: September 2019
 """
 import torch.nn as nn
-import random
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -14,11 +13,10 @@ from learning_based_surface.surface_conv import Merge as Merge
 from learning_based_surface.grid_conv import SurfaceRotateConv as SurfaceConvPurity
 from learning_based_surface.grid_conv import cartesian2polar
 from torch.nn.utils import weight_norm
-from utils.pointconv_util import knn_point
 
 # [512, 256, 128, 64, 32, 16] auxiliary6
 # [512, 128, 32] auxiliary3
-KNN_NUM = 31
+KNN_NUM = 16
 
 
 def svd_points(data):
@@ -138,7 +136,7 @@ def lc_consistence_loss(axis, neighbor, idx):
 def random_sample(input_num, output_num, B):
     DIs = []
     for i in range(B):
-        DI = torch.tensor(random.sample([x for x in range(0, input_num)], output_num))
+        DI = torch.from_numpy(np.random.choice(input_num, output_num, replace=False))
         DIs.append(DI)
     return torch.stack(DIs)
 
@@ -233,7 +231,7 @@ class SurfaceNet(nn.Module):
         pad = 6 + 0
         if normal:
             pad += 3
-        r = 0.15
+        r = 0.2
         self.normal = normal
         self.random_sp = random_sp
         self.random_nb = random_nb
@@ -247,14 +245,18 @@ class SurfaceNet(nn.Module):
                                       radius=r, global_input=self.global_input, normal=normal)
         self.sa04 = SurfaceConvPurity(npoint=point_num[0], in_channel=16 * scale + pad, out_channel=16 * scale,
                                       radius=r, global_input=self.global_input, normal=normal)
+        self.fc_res0 = nn.Linear(16 * scale, 16 * scale)
+        self.bn_res0 = nn.BatchNorm1d(16 * scale)
 
         self.sa1 = SurfaceConvPurity(npoint=point_num[1], in_channel=16 * scale + pad, out_channel=64 * scale, radius=r, normal=normal)
         self.sa12 = SurfaceConvPurity(npoint=point_num[2], in_channel=64 * scale + pad, out_channel=64 * scale,
                                       radius=2 * r, normal=normal)
-        self.sa13 = SurfaceConvPurity(npoint=point_num[2], in_channel=64 * scale + pad, out_channel=128 * scale,
+        self.sa13 = SurfaceConvPurity(npoint=point_num[2], in_channel=64 * scale + pad, out_channel=64 * scale,
                                       radius=2 * r, normal=normal)
-        self.sa14 = SurfaceConvPurity(npoint=point_num[2], in_channel=128 * scale + pad, out_channel=256 * scale,
+        self.sa14 = SurfaceConvPurity(npoint=point_num[2], in_channel=64 * scale + pad, out_channel=64 * scale,
                                       radius=2 * r, normal=normal)
+        self.fc_res1 = nn.Linear(32 * scale, 32 * scale)
+        self.bn_res1 = nn.BatchNorm1d(32 * scale)
 
         self.sa2 = SurfaceConvPurity(npoint=point_num[3], in_channel=64 * scale + pad, out_channel=128 * scale,
                                      radius=2 * r, normal=normal)
@@ -262,8 +264,7 @@ class SurfaceNet(nn.Module):
         #                             radius=0.25)
         # self.sa21 = SurfaceConv(npoint=point_num[2], in_channel=64 + 3, mlp=[64, 64, 128])
         # self.sa22 = SurfaceConv(npoint=point_num[2], in_channel=32 + 3, mlp=[32, 32, 64])
-        self.sa3 = SurfaceConvPurity(npoint=point_num[4], in_channel=128 * scale + pad, out_channel=256 * scale,
-                                     radius=2 * r, normal=normal)
+        # self.sa3 = SurfaceConv(npoint=point_num[2], in_channel=256 + 3, mlp=[256, 256, 512])
         self.point_num = point_num
         self.scale = scale
 
@@ -278,9 +279,9 @@ class SurfaceNet(nn.Module):
         l0_xyz, l0_points = self.sa02(l0_xyz, l0_points, local_coordinates_layer[0],
                                       neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
         # l0_xyz, l0_points = self.sa03(l0_xyz, l0_points, local_coordinates_layer[0],
-        #                                 neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
+        #                                neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
         # l0_xyz, l0_points = self.sa04(l0_xyz, l0_points, local_coordinates_layer[0],
-        #                                 neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
+        #                                neighbors_layer[0], parameters_layer[0], data_idxes_layer[0])
 
         # 2048 -> 512
         l1_xyz, l1_points = self.sa1(l0_xyz, l0_points, local_coordinates_layer[1],
@@ -288,22 +289,22 @@ class SurfaceNet(nn.Module):
         # 512 -> 512
         l2_xyz, l2_points = self.sa12(l1_xyz, l1_points, local_coordinates_layer[2],
                                        neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
-        l2_xyz, l2_points = self.sa13(l2_xyz, l2_points, local_coordinates_layer[2],
-                                        neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
-        l2_xyz, l2_points = self.sa14(l2_xyz, l2_points, local_coordinates_layer[2],
-                                         neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
-        # # 512 -> 128
-        # l2_xyz, l2_points = self.sa2(l2_xyz, l2_points, local_coordinates_layer[3],
-        #                              neighbors_layer[3], parameters_layer[2], data_idxes_layer[3])
-        # 128 -> 128
+        # l2_xyz, l2_points = self.sa13(l2_xyz, l2_points, local_coordinates_layer[2],
+        #                                neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
+        # l2_xyz, l2_points = self.sa14(l2_xyz, l2_points, local_coordinates_layer[2],
+        #                                  neighbors_layer[2], parameters_layer[1], data_idxes_layer[2])
+        # 512 -> 128
+        l2_xyz, l2_points = self.sa2(l2_xyz, l2_points, local_coordinates_layer[3],
+                                     neighbors_layer[3], parameters_layer[2], data_idxes_layer[3])
+        # 128 -> 32
         # l2_xyz, l2_points = self.sa3(l2_xyz, l2_points, local_coordinates_layer[4],
-        #                               neighbors_layer[4], parameters_layer[2], data_idxes_layer[4])
+        #                              neighbors_layer[4], parameters_layer[2], data_idxes_layer[4])
 
         return l2_xyz, l2_points
 
 
 class MainNet(nn.Module):
-    def __init__(self, num_classes=40, point_num=[2048, 512, 512, 128, 32], normal=False, random_sp=True, random_nb=True):
+    def __init__(self, num_classes=40, point_num=[2048, 2048, 2048, 2048], normal=False, random_sp=True, random_nb=True):
         super(MainNet, self).__init__()
         scale = 2
         pad = 3 + 0
@@ -317,10 +318,10 @@ class MainNet(nn.Module):
         self.sa4 = Merge(npoint=1, in_channel=128 * scale + pad, mlp=[128 * scale, 256 * scale, 512*scale], normal=normal)
         self.fc1 = weight_norm(nn.Linear(512 * scale, 256 * scale))
         self.bn1 = nn.BatchNorm1d(256 * scale)
-        self.drop1 = nn.Dropout(0.3)
+        self.drop1 = nn.Dropout(0.4)
         self.fc2 = weight_norm(nn.Linear(256 * scale, 128 * scale))
         self.bn2 = nn.BatchNorm1d(128 * scale)
-        self.drop2 = nn.Dropout(0.3)
+        self.drop2 = nn.Dropout(0.4)
         self.fc3 = weight_norm(nn.Linear(128 * scale, num_classes))
 
         self.point_num = point_num
@@ -329,7 +330,7 @@ class MainNet(nn.Module):
         self.random_nb = random_nb
         self.normal = normal
 
-    def forward(self, xyz, neighbors, data_idxes, local_axises):
+    def forward(self, xyz, neighbors, data_idxes, local_axises, cls_label):
         B, N, C = xyz.shape
 
         # seperate the neighbor information into layers
@@ -342,45 +343,37 @@ class MainNet(nn.Module):
         lc_consistence = torch.tensor(0.0, device=xyz.device)
         cid = 0
         current_xyz = xyz
-        lcaxis = [local_axises[:, cid:cid + self.point_num[0], :, :]]
-
         for idx, point_num in enumerate(self.point_num):
             # random choose neighbors
-
-            if True:  # self.train:
+            if self.train:
+                if self.random_nb:
+                    random_index = torch.from_numpy(
+                        np.concatenate([np.array([0]), np.random.choice(32, KNN_NUM, replace=False)], 0)).to(
+                        xyz.device).long()
+                    NBs = neighbors[:, cid:cid + point_num, random_index].squeeze()
+                else:
+                    NBs = neighbors[:, cid:cid + point_num, 0:KNN_NUM + 1].squeeze()
                 if self.random_sp:
                     if idx == 0:
-                        DIs = random_sample(2048, point_num, B)
-                        NBs = neighbors[:, cid:cid + point_num, 0:KNN_NUM + 1].squeeze()
+                        DIs = random_sample(2048, point_num, NBs.shape[0])
                     else:
-                        DIs = random_sample(self.point_num[idx - 1], point_num, B)
-                        # current_xyz = index_points(current_xyz, DIs)
-                        NBs = knn_point(KNN_NUM + 1, current_xyz, current_xyz).squeeze()
-                        NBs = index_points(NBs, DIs)
+                        DIs = random_sample(self.point_num[idx - 1], point_num, NBs.shape[0])
                 else:
                     DIs = data_idxes[:, cid:cid + point_num].squeeze()
-                    NBs = neighbors[:, cid:cid + point_num, 0:KNN_NUM + 1].squeeze()
-            # else:
-            #     NBs = neighbors[:, cid:cid + point_num, 0:KNN_NUM + 1].squeeze()
-            #     DIs = data_idxes[:, cid:cid + point_num].squeeze()
-            pre_axis = lcaxis[-1].reshape(B,-1,9)
-            current_axis = index_points(pre_axis, DIs).reshape(B,-1,3,3)
-            lcaxis.append(current_axis)
-
-            local_ax = lcaxis[-1]
-            # current_xyz = index_points(current_xyz, DIs)
+            else:
+                NBs = neighbors[:, cid:cid + point_num, 0:KNN_NUM + 1].squeeze()
+                DIs = data_idxes[:, cid:cid + point_num].squeeze()
+            local_ax = local_axises[:, cid:cid + point_num, :, :]
+            current_xyz = index_points(current_xyz, DIs)
             # x_axis, y_axis, z_axis = self.axis_net(current_xyz, NBs, local_ax)  # BNC
             # print(self.axis_net.fc1.weight)
             axis = local_ax  # torch.stack([x_axis, y_axis, z_axis]).permute(1, 2, 3, 0)  # BNC3
             grouped_xyz = index_points(current_xyz[:, :, 0:3], NBs)
-            current_xyz = index_points(current_xyz, DIs)
             grouped_xyz = grouped_xyz - current_xyz[:, :, 0:3].unsqueeze(2)  # BNKC
             lc = torch.matmul(grouped_xyz, axis)  # BNKC
             local_coordinates_layer.append(lc)
-            # if idx == 0:
-            #     lc_consistence += lc_consistence_loss(lcaxis[-1], NBs, idx)
-            # else:
-            #     lc_consistence += lc_consistence_loss(lcaxis[-2], NBs, idx)
+
+            lc_consistence += lc_consistence_loss(axis, NBs, idx)
             # lc_std += lc_std_loss(lc)
 
             # local_coordinates_layer.append(local_coordinates[:, cid:cid+point_num,:, :].squeeze())
@@ -389,12 +382,14 @@ class MainNet(nn.Module):
             cid += point_num
 
         l2_xyz_local, l2_points_local = self.localnet(xyz, local_coordinates_layer, neighbors_layer, data_idxes_layer, parameters_layer)
+        cls_label_one_hot = cls_label.view(B, 16, 1).repeat(1, 1, N).permute(0,2,1)  # BNC
+        l2_points_local = torch.cat([l2_points_local, cls_label_one_hot], 2)
         # l2_xyz, l2_points = self.globalnet(xyz, local_coordinates_layer, neighbors_layer, data_idxes_layer, parameters_layer)
         # l2_points = torch.cat([l2_points, l2_points_local], dim=-1)
-        l4_xyz, l4_points = self.sa4(l2_xyz_local, l2_points_local)
-        x = l4_points.view(B, self.scale * 512)
-        x = self.drop1(F.relu(self.bn1(self.fc1(x))))
-        x = self.drop1(F.relu(self.bn2(self.fc2(x))))
+        # l4_xyz, l4_points = self.sa4(l2_xyz_local, l2_points_local)
+        # x = l4_points.view(B, self.scale * 512)
+        x = self.drop1(F.relu(self.fc1(l2_points_local)))
+        x = self.drop2(F.relu(self.fc2(x)))
         x = self.fc3(x)
         x = F.log_softmax(x, -1)
         return x, lc_std, lc_consistence

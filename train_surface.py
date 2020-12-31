@@ -11,10 +11,10 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 
-from utils.mls import farthest_point_sample, MLS_batch
+from utils.mls import construct_MLS_multi, loadAuxiliaryInfo
 from utils.utils import test, save_checkpoint, construct_planes
 from model.pointconv import PointConvDensityClsSsg as PointConvClsSsg
-from learning_based_surface.surfacenet import SurfaceNet
+from learning_based_surface.surfacenet import SurfaceNet, MainNet
 
 import h5py
 
@@ -32,90 +32,18 @@ def parse_args():
     '''PARAMETERS'''
     parser = argparse.ArgumentParser('PointConv')
     parser.add_argument('--batchsize', type=int, default=16, help='batch size in training')
-    parser.add_argument('--epoch',  default=100, type=int, help='number of epoch in training')
+    parser.add_argument('--epoch',  default=200, type=int, help='number of epoch in training')
     parser.add_argument('--learning_rate', default=1e-3, type=float, help='learning rate in training')
-    parser.add_argument('--gpu', type=str, default='2', help='specify gpu device')
+    parser.add_argument('--gpu', type=str, default='0', help='specify gpu device')
     parser.add_argument('--train_metric', type=str, default=True, help='whether evaluate on training dataset')
     parser.add_argument('--optimizer', type=str, default='SGD', help='optimizer for training')
     parser.add_argument('--pretrain', type=str, default=None, help='whether use pretrain model')
     parser.add_argument('--decay_rate', type=float, default=1e-4, help='decay rate of learning rate')
-    parser.add_argument('--with_normal', type=bool, default=False, help='whether the input containing point normal')
+    parser.add_argument('--with_normal', type=bool, default=True, help='whether the input containing point normal')
     parser.add_argument('--model_name', default='pointconv', help='model name')
+    parser.add_argument('--random_sample', default=True, help='model name')
+    parser.add_argument('--random_neighbor', default=False, help='model name')
     return parser.parse_args()
-
-
-def construct_MLS_multi(points, path, point_nums, phase='train'):
-    data_file = h5py.File(os.path.join(path, phase + '.h5'), 'w')
-
-    points = torch.from_numpy(points).float()
-    point_nums = point_nums
-    KNN_nums = [32]*len(point_nums)
-    for i, point_num in enumerate(point_nums):
-        KNN_num = KNN_nums[i]
-        local_coordinates = []
-        neighbor_lists = []
-        parameters = []
-        neighbor_grp = data_file.create_group("neighbor"+str(i))
-        # coordinate_grp = data_file.create_group("coordinate"+str(i))
-        # paramters_grp = data_file.create_group("parameters"+str(i))
-        idx_grp = data_file.create_group("idx"+str(i))
-        new_points =[]
-        print("layer ", i)
-        data_idx_lists = farthest_point_sample(points[:,:,0:3], point_num).long()
-        for idx in range(points.shape[0]):
-            if idx%100 == 99:
-                print("complete %f"%(float(idx)/float(points.shape[0])))
-            data = points[idx, :, :]
-            data_idx = data_idx_lists[idx]
-
-            filtered_neighbor_list = MLS_batch(data, data_idx, KNN_num)
-            # local_coordinates.append(local_coordinate)
-            # data_idx_lists.append(data_idx)
-            # parameters.append(parameter)
-            neighbor_lists.append(filtered_neighbor_list)
-
-            data = data[data_idx]
-            new_points.append(data)
-
-        points = torch.stack(new_points)
-        neighbor_lists = torch.stack(neighbor_lists)
-        # local_coordinates = torch.stack(local_coordinates)
-        # parameters = torch.stack(parameters)
-        # B, N, _, _ = parameters.shape
-        # parameters = parameters.reshape(B*N, -1)
-        # parameters = (parameters - parameters.mean(0, keepdim=True)) / parameters.var(0, keepdim=True)
-        # parameters = parameters.reshape(B, N, -1)
-
-        # data_idx_lists = torch.stack(data_idx_lists)
-        neighbor_grp.create_dataset('neighbor_lists', data=neighbor_lists)
-        # coordinate_grp.create_dataset('local_coordinates', data=local_coordinates)
-        # paramters_grp.create_dataset('parameters', data=parameters)
-        idx_grp.create_dataset('data_idx_lists', data=data_idx_lists)
-
-
-def loadAuxiliaryInfo(auxiliarypath, point_nums, phase='train'):
-    data_file = h5py.File(os.path.join(auxiliarypath, phase + '.h5'), 'r')
-    local_coordinates = []
-    neighbor_lists = []
-    data_idx_lists = []
-    parameters_lists = []
-    point_nums = point_nums
-    returned_num = 100
-    for i, point_num in enumerate(point_nums):
-        neighbor_grp = data_file["neighbor" + str(i)]["neighbor_lists"][:].astype(np.long)
-        # coordinate_grp = data_file["coordinate" + str(i)]["local_coordinates"][:].astype(np.float32)
-        # parameters_grp = data_file["parameters" + str(i)]["parameters"][:].astype(np.float32)
-        idx_grp = data_file["idx" + str(i)]["data_idx_lists"][:].astype(np.long)
-        # parameters_lists.append(parameters_grp)
-        neighbor_lists.append(neighbor_grp)
-        # local_coordinates.append(coordinate_grp)
-        data_idx_lists.append(idx_grp)
-    neighbor_lists = np.concatenate(neighbor_lists, 1) #([B, N0, content], [B, N1, content], [B, N1, content])
-    # local_coordinates = np.concatenate(local_coordinates, 1)
-    data_idx_lists = np.concatenate(data_idx_lists, 1)
-    # parameters_lists = np.concatenate(parameters_lists, 1)
-
-    return torch.from_numpy(neighbor_lists), torch.from_numpy(data_idx_lists)
 
 
 def main(args):
@@ -154,7 +82,7 @@ def main(args):
 
     '''MODEL LOADING'''
     num_class = 40
-    classifier = SurfaceNet(num_class, normal=args.with_normal).cuda()
+    classifier = MainNet(num_class, normal=args.with_normal, random_sp=args.random_sample, random_nb=args.random_neighbor).cuda()
     if args.pretrain is not None:
         print('Use pretrain model...')
         logger.info('Use pretrain model')
@@ -184,17 +112,17 @@ def main(args):
     '''DATA LOADING'''
     logger.info('Load dataset ...')
     train_data, train_label, test_data, test_label = load_normal_data('./data/modelnet40_normal_resampled/')
-    '''logger.info('construct_MLS for train data...')
-    construct_MLS_multi(train_data, auxiliarypath, classifier.point_num)
-    logger.info('construct_MLS for test data...')
-    construct_MLS_multi(test_data, auxiliarypath, classifier.point_num, phase='test')'''
+    # logger.info('construct_MLS for train data...')
+    # construct_MLS_multi(train_data, auxiliarypath, classifier.point_num)
+    # logger.info('construct_MLS for test data...')
+    # construct_MLS_multi(test_data, auxiliarypath, classifier.point_num, phase='test')
 
-    train_neighbor_lists, train_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
+    train_neighbor_lists, train_data_idx_lists, train_local_axises = loadAuxiliaryInfo(auxiliarypath, classifier.point_num)
     logger.info("The number of training data is: %d",train_data.shape[0])
     logger.info("The number of test data is: %d", test_data.shape[0])
-    trainDataset = ModelNetDataLoader(train_data, train_label, train_neighbor_lists, train_data_idx_lists)
-    test_neighbor_lists, test_data_idx_lists = loadAuxiliaryInfo(auxiliarypath, classifier.point_num, phase='test')
-    testDataset = ModelNetDataLoader(test_data, test_label, test_neighbor_lists, test_data_idx_lists)
+    trainDataset = ModelNetDataLoader(train_data, train_label, train_neighbor_lists, train_data_idx_lists, train_local_axises)
+    test_neighbor_lists, test_data_idx_lists, test_local_axises = loadAuxiliaryInfo(auxiliarypath, classifier.point_num, phase='test')
+    testDataset = ModelNetDataLoader(test_data, test_label, test_neighbor_lists, test_data_idx_lists, test_local_axises)
     trainDataLoader = torch.utils.data.DataLoader(trainDataset, batch_size=args.batchsize, shuffle=True)
     testDataLoader = torch.utils.data.DataLoader(testDataset, batch_size=args.batchsize, shuffle=False)
 
@@ -203,28 +131,27 @@ def main(args):
     first_time = True
     for epoch in range(start_epoch,args.epoch):
         print('Epoch %d (%d/%s):' % (global_epoch + 1, epoch + 1, args.epoch))
-        logger.info('Epoch %d (%d/%s):' ,global_epoch + 1, epoch + 1, args.epoch)
+        logger.info('Epoch %d (%d/%s):', global_epoch + 1, epoch + 1, args.epoch)
 
         scheduler.step()
         losses = 0
         lc_stds = 0
         lc_consistences = 0
-        if epoch == 2:
-            ccc = -1
+        mean_correct = []
         for batch_id, data in tqdm(enumerate(trainDataLoader, 0), total=len(trainDataLoader), smoothing=0.9):
-            points, target, neighbor_lists, data_idx_lists = data
+            points, target, neighbor_lists, data_idx_lists, local_axises = data
             # target = target[:, 0]
             # points = points.transpose(2, 1)
             if args.with_normal:
-                points, target, neighbor_lists, data_idx_lists = \
-                    points.float().cuda(), target.cuda(), neighbor_lists.cuda(),  data_idx_lists.cuda()
+                points, target, neighbor_lists, data_idx_lists, local_axises = \
+                    points.float().cuda(), target.cuda(), neighbor_lists.cuda(),  data_idx_lists.cuda(), local_axises.cuda()
             else:
-                points, target, neighbor_lists, data_idx_lists = \
-                    points[:,:,0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda()
+                points, target, neighbor_lists, data_idx_lists, local_axises = \
+                    points[:,:,0:3].float().cuda(), target.cuda(), neighbor_lists.cuda(), data_idx_lists.cuda(), local_axises.cuda()
 
             optimizer.zero_grad()
             classifier = classifier.train()
-            pred, lc_std, lc_consistence = classifier(points, neighbor_lists, data_idx_lists)
+            pred, lc_std, lc_consistence = classifier(points, neighbor_lists, data_idx_lists, local_axises)
             loss = F.nll_loss(pred, target.long())
             total_loss = loss - lc_std - lc_consistence
             total_loss.backward()
@@ -235,6 +162,9 @@ def main(args):
             lc_stds += lc_std.item()
             lc_consistences += lc_consistence.item()
 
+            pred_choice = pred.data.max(1)[1]
+            correct = pred_choice.eq(target.long().data).cpu().sum()
+            mean_correct.append(correct.item() / float(points.size()[0]))
         if epoch%10 == 9:
             train_acc = test(classifier.eval(), trainDataLoader, args.with_normal) if args.train_metric else None
             writer3.add_scalar('quadratic', train_acc, global_step=epoch)
@@ -242,7 +172,8 @@ def main(args):
         writer1.add_scalar('quadratic', losses / (batch_id + 1), global_step=epoch)
         writer2.add_scalar('quadratic', acc, global_step=epoch)
 
-        print('\r Loss: %f' % float(losses/(batch_id+1)), 'lc_std: %f' % float(lc_stds/(batch_id+1)), 'lc_consistences: %f' % float(lc_consistences/(batch_id+1)))
+        print('\r Loss: %f' % float(losses/(batch_id+1)), 'lc_std: %f' % float(lc_stds/(batch_id+1)),
+              'lc_consistences: %f' % float(lc_consistences/(batch_id+1)), 'acc: %f' %np.mean(mean_correct))
         logger.info('Loss: %.2f', losses/(batch_id+1))
         if args.train_metric and epoch % 10 == 9:
             print('Train Accuracy: %f' % train_acc)
@@ -252,7 +183,7 @@ def main(args):
 
         if (acc >= best_tst_accuracy) and epoch > 10:
             best_tst_accuracy = acc
-            '''logger.info('Save model...')
+            logger.info('Save model...')
             save_checkpoint(
                 global_epoch + 1,
                 train_acc if args.train_metric else 0.0,
@@ -261,7 +192,7 @@ def main(args):
                 optimizer,
                 str(checkpoints_dir),
                 args.model_name)
-            print('Saving model....')'''
+            print('Saving model....')
         global_epoch += 1
     print('Best Accuracy: %f'%best_tst_accuracy)
 

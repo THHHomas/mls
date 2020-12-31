@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 import h5py
+from time import time
 from torch.utils.data import Dataset
 import torch
 import matplotlib.pyplot as plt
@@ -20,9 +21,23 @@ def load_h5(h5_filename):
     seg = []
     return (data, label, seg)
 
+def svd_points(data):
+    # data: B, N, C
+    data = torch.from_numpy(data)
+    normal = data[:, :, 3:]
+    points = data[:, :, 0:3]
+    A = torch.matmul(points.permute(0,2,1), points)
+    E, U = torch.symeig(A, eigenvectors=True)  # U->BCC
+    new_point = torch.matmul(points, U)
+    normal = torch.matmul(normal, U)
+    new_point = torch.cat([new_point, normal], 2)
+    return new_point.numpy()
+
 def load_normal_data(dir):
     data_train0, label_train0,Seglabel_train0  = load_h5(dir + 'train.h5')
     data_test0, label_test0,Seglabel_test0 = load_h5(dir + 'test.h5')
+    # data_test0 = svd_points(data_test0)
+    # data_train0 = svd_points(data_train0)
     return data_train0, label_train0, data_test0, label_test0
 
 def load_data(dir, classification=False):
@@ -53,12 +68,14 @@ def load_data(dir, classification=False):
         return train_data, train_Seglabel, test_data, test_Seglabel
 
 class ModelNetDataLoader(Dataset):
-    def __init__(self, data, labels, neighbor_lists=None, data_idx_lists=None, rotation = None):
+    def __init__(self, data, labels, neighbor_lists=None, data_idx_lists=None, local_axises=None, rotation=None, npoint=1024):
         self.data = data
         self.labels = labels
+        self.npoint = npoint
         self.rotation = rotation
         self.neighbor_lists = neighbor_lists
         self.data_idx_lists = data_idx_lists
+        self.local_axises = local_axises
 
     def __len__(self):
         return len(self.data)
@@ -72,21 +89,23 @@ class ModelNetDataLoader(Dataset):
         """
         cosval = np.cos(rotation_angle)
         sinval = np.sin(rotation_angle)
-        rotation_matrix = np.array([[cosval, 0, sinval],
-                                    [0, 1, 0],
-                                    [-sinval, 0, cosval]], dtype = np.float32)
-        rotated_data = np.dot(data, rotation_matrix)
-
-        return rotated_data
+        rotation_matrix = np.array([[cosval, -sinval, 0],
+                                    [sinval, cosval, 0],
+                                    [0, 0, 1]], dtype = np.float32)
+        data[:, 0:3] = np.dot(data[:, 0:3], rotation_matrix)
+        return data
 
     def __getitem__(self, index):
         if self.rotation is not None:
             pointcloud = self.data[index]
             angle = np.random.randint(self.rotation[0], self.rotation[1]) * np.pi / 180
             pointcloud = self.rotate_point_cloud_by_angle(pointcloud, angle)
-            return pointcloud, self.labels[index]
+            if self.neighbor_lists is not None:
+                return pointcloud, self.labels[index], self.neighbor_lists[index], self.data_idx_lists[index], self.local_axises[index]
+            else:
+                return pointcloud[:,0:3], self.labels[index]
         else:
             if self.neighbor_lists is not None:
-                return self.data[index], self.labels[index], self.neighbor_lists[index], self.data_idx_lists[index]
+                return self.data[index], self.labels[index], self.neighbor_lists[index], self.data_idx_lists[index], self.local_axises[index]
             else:
                 return self.data[index], self.labels[index]

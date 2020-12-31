@@ -59,7 +59,7 @@ def main(args):
     train_data, train_label, test_data, test_label = load_data(datapath, classification=True)
     logger.info("The number of training data is: %d",train_data.shape[0])
     logger.info("The number of test data is: %d", test_data.shape[0])
-    testDataset = ModelNetDataLoader(test_data, test_label)
+    testDataset = ModelNetDataLoader(test_data, test_label, rotation=[0, 360])
     testDataLoader = torch.utils.data.DataLoader(testDataset, batch_size=args.batchsize, shuffle=False)
     
 

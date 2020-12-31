@@ -36,7 +36,7 @@ def square_distance(src, dst):
     dist = -2 * torch.matmul(src, dst.permute(0, 2, 1))
     dist += torch.sum(src ** 2, -1).view(B, N, 1)
     dist += torch.sum(dst ** 2, -1).view(B, 1, M)
-    return dist
+    return dist.sqrt()
 
 def index_points(points, idx):
     """
@@ -112,7 +112,13 @@ def knn_point(nsample, xyz, new_xyz, raduis=0.15):
     Return:
         group_idx: grouped points index, [B, S, nsample]
     """
-    sqrdists = square_distance(new_xyz, xyz).squeeze()
+    sqrdists = square_distance(new_xyz[:,:,0:3], xyz[:,:,0:3]).squeeze()
+    # normaldists = square_distance(new_xyz[:, :, 3:], xyz[:, :, 3:]).squeeze()
+    # d1, d1_dix = torch.topk(sqrdists, nsample, dim=-1, largest=False, sorted=True)
+    # k=2000
+    # d2 = normaldists[k, d1_dix[k]]
+    # r, t = d1.mean(), d2.mean()
+    # dist = 10*sqrdists + 0*normaldists
     _, group_idx = torch.topk(sqrdists, nsample, dim=-1, largest=False, sorted=True)
     return group_idx
 
